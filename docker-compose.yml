@@ -1,0 +1,36 @@
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    depends_on:
+      - auth-mongo
+    env_file:
+      - .env
+    environment:
+      - MONGO_URL=mongodb://auth-mongo:27017
+      - KEYS_DIR=/app/keys
+    volumes:
+      - auth-service-keys:/app/keys
+    ports:
+      - "8100:8000"
+    networks:
+      - app
+
+  auth-mongo:
+    image: mongo:7
+    container_name: auth-mongo
+    restart: unless-stopped
+    volumes:
+      - auth-mongo-data:/data/db
+    networks:
+      - app
+
+volumes:
+  auth-service-keys:
+  auth-mongo-data:
+
+networks:
+  app:
