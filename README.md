@@ -14,15 +14,46 @@ FastAPI + MongoDB + `python-jose`/`cryptography` (RS256) + `passlib`/`bcrypt`, e
 - `GET /auth/register/genuser` — random unique username suggestion
 - `POST /auth/login` — OAuth2 password form (`username` accepts email *or* username), returns a signed access token + the user's public profile
 - `GET /.well-known/jwks.json` — the RSA public key in standard JWK format, so any consumer can verify tokens without ever holding a secret
+- `GET /applications` — the per-application role registry (see below). Public to any authenticated caller; used by the admin panel and by consuming apps to read their role options.
 - RSA keypair is generated once on first startup and persisted to `KEYS_DIR` (a mounted volume in Docker) — it does **not** regenerate on restart, which would instantly invalidate every previously-issued token. Includes a stable `kid` in both the JWT header and the JWKS response.
+
+## Per-application role registry
+
+Each consuming app (GRIPL, RAGulate, future DBIS tools) defines its own role
+vocabulary in an `applications` collection — one document per app — without any
+`auth-service` code change:
+
+```json
+{ "_id": "gripl", "display_name": "GRIPL",
+  "roles": [ {"key": "admin", "label": "Admin"}, {"key": "dpo", "label": "Data Protection Officer"},
+             {"key": "researcher", "label": "Researcher"}, {"key": "end-user", "label": "End User"} ],
+  "default_role": "end-user" }
+```
+
+Every app's `roles` list **must** include a role keyed `admin` (the global
+superuser tier resolves to it for every app). Registering an app is a rare,
+deployment-time action, so it is **not** exposed over HTTP — use the script:
+
+```bash
+docker compose exec auth-service python scripts/register_application.py gripl \
+    --name "GRIPL" \
+    --role admin=Admin --role dpo="Data Protection Officer" \
+    --role researcher=Researcher --role end-user="End User" \
+    --default-role end-user
+
+docker compose exec auth-service python scripts/register_application.py --list
+```
+
+`--overwrite` replaces an existing registration. Resolving these roles into a
+JWT `app_roles` claim is a separate step (auth-service#6).
 
 ## Not implemented yet (by design, staged as follow-up work)
 
 - **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder for this.
 - **`/users/me` (GET/PUT)** — no profile read/update endpoint yet (email, OpenRouter API key, preferred model, etc.). Both RAGulate and GRIPL have known-broken or removed features waiting on this specifically.
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
-- **Per-application roles** — the user model doesn't carry an `app_roles` claim yet; there's no `applications` registry.
-- **Admin API/UI** — nothing beyond the raw endpoints above; managing anything today means talking to MongoDB directly.
+- **`app_roles` JWT claim** — the `applications` registry exists (see above), but issued tokens don't yet carry a resolved per-app role map (auth-service#6).
+- **Admin API/UI** — nothing beyond the raw endpoints above; managing anything today means talking to MongoDB directly (or, for app registration, the script above).
 
 ## Running locally
 
@@ -36,6 +67,13 @@ This starts:
 - **`auth-service`** — FastAPI on `http://localhost:8100`
 
 API docs at `http://localhost:8100/docs`.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
 ### Environment variables (`.env.example`)
 
