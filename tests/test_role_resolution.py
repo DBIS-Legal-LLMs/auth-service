@@ -24,12 +24,13 @@ RAGULATE = ApplicationInDB(
 )
 
 
-def _user(app_roles: dict[str, str] | None = None) -> UserInDB:
+def _user(app_roles: dict[str, str] | None = None, *, is_superuser: bool = False) -> UserInDB:
     return UserInDB(
         _id="u1",
         email="u1@example.com",
         username="u1",
         password_hash="x",
+        is_superuser=is_superuser,
         app_roles=app_roles or {},
         created_at=datetime.now(timezone.utc),
     )
@@ -62,3 +63,20 @@ def test_default_role_change_applies_without_touching_the_user():
 
 def test_no_registered_apps_yields_empty_map():
     assert resolve_app_roles(_user({"gripl": "admin"}), []) == {}
+
+
+# ----- global superuser tier (auth-service#7) -----
+
+def test_superuser_resolves_to_admin_for_every_app():
+    user = _user(is_superuser=True)
+    assert resolve_app_roles(user, [GRIPL, RAGULATE]) == {"gripl": "admin", "ragulate": "admin"}
+
+
+def test_superuser_override_beats_a_lower_explicit_role():
+    user = _user({"gripl": "researcher"}, is_superuser=True)
+    assert resolve_role(user, GRIPL) == "admin"
+
+
+def test_non_superuser_is_unaffected():
+    user = _user({"gripl": "researcher"}, is_superuser=False)
+    assert resolve_role(user, GRIPL) == "researcher"

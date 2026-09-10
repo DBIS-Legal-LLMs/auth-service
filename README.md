@@ -15,6 +15,7 @@ FastAPI + MongoDB + `python-jose`/`cryptography` (RS256) + `passlib`/`bcrypt`, e
 - `POST /auth/login` — OAuth2 password form (`username` accepts email *or* username), returns a signed access token (carrying the resolved `app_roles` claim — see below) + the user's public profile
 - `GET /.well-known/jwks.json` — the RSA public key in standard JWK format, so any consumer can verify tokens without ever holding a secret
 - `GET /applications` — the per-application role registry (see below). Public to any authenticated caller; used by the admin panel and by consuming apps to read their role options.
+- `PUT /users/{id}/roles/{app_id}` — assign a user's role for one app (superuser or app-admin only; see *Global superuser tier* below).
 - RSA keypair is generated once on first startup and persisted to `KEYS_DIR` (a mounted volume in Docker) — it does **not** regenerate on restart, which would instantly invalidate every previously-issued token. Includes a stable `kid` in both the JWT header and the JWKS response.
 
 ## Per-application role registry
@@ -56,7 +57,11 @@ role for **every** registered app:
 ```
 
 Resolution (`services/role_resolution.py`) is computed fresh at mint time:
-a user's explicitly-assigned role for an app, else that app's `default_role`.
+
+1. a **global superuser** is `"admin"` for every app (see below);
+2. otherwise the user's explicitly-assigned role for the app;
+3. otherwise the app's `default_role`.
+
 Nothing is written back to the user document, so changing an app's
 `default_role` immediately affects everyone without an explicit assignment.
 
@@ -64,13 +69,38 @@ The token is not audience-scoped — each consuming app reads its own key from t
 map and ignores the rest. `auth-service` only *serves* the claim; what a role is
 allowed to *do* is each app's own concern.
 
+## Global superuser tier (auth-service#7)
+
+A user document may carry `is_superuser: true` — a tier entirely separate from
+`app_roles`. A superuser resolves to `"admin"` for **every** registered app, now
+and in the future, computed at mint time by iterating the registry — never
+written per-app, so there is nothing to keep in sync when a new app registers.
+Issued tokens also carry a top-level `is_superuser` claim.
+
+**Bootstrapping the first superuser** — there is no API path for it (every
+superuser-granting endpoint requires an existing superuser caller). Run, once:
+
+```bash
+docker compose exec auth-service python scripts/promote_superuser.py <email-or-username>
+```
+
+It **refuses to run once any superuser exists** — after the bootstrap, every
+further promotion must go through the audited API (auth-service#8).
+
+### `PUT /users/{id}/roles/{app_id}`
+
+Sets a user's explicit role for one app (body: `{"role": "<role key>"}`).
+Replaces editing Mongo by hand. The caller must be a global superuser or an
+**admin of that specific app**. Refuses with `409` if the *target* is a
+superuser — their effective role isn't editable per-app by anyone.
+
 ## Not implemented yet (by design, staged as follow-up work)
 
 - **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder for this.
 - **`/users/me` (GET/PUT)** — no profile read/update endpoint yet (email, OpenRouter API key, preferred model, etc.). Both RAGulate and GRIPL have known-broken or removed features waiting on this specifically.
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
-- **Global superuser tier** — no `is_superuser` override yet; `resolve_role` has a marked spot for it (auth-service#7).
-- **Admin API/UI** — nothing beyond the raw endpoints above; managing per-user role *assignments* today means talking to MongoDB directly (app registration has the script above).
+- **Superuser-management API** — `PUT /users/{id}/superuser` with password reauthentication + last-superuser protection is auth-service#8; until then `promote_superuser.py` is the only way in and there is no way to demote.
+- **Admin UI** — no frontend yet (auth-service#9); role assignment is the `PUT` endpoint above, superuser bootstrap is the script.
 
 ## Running locally
 

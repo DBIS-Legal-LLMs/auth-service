@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo.asynchronous.database import AsyncDatabase
 
 from ..data import func
@@ -76,6 +77,7 @@ class UserService:
             "username": username,
             "password_hash": password_hash,
             "role": "user",
+            "is_superuser": False,
             "preferred_llm_provider": None,
             "preferred_model": None,
             "openrouter_api_key": None,
@@ -107,7 +109,11 @@ class UserService:
         return UserInDB(**doc)
 
     async def get_by_id(self, user_id: str) -> Optional[UserInDB]:
-        doc = await self.users.find_one({"_id": ObjectId(user_id)})
+        try:
+            oid = ObjectId(user_id)
+        except (InvalidId, TypeError):
+            return None
+        doc = await self.users.find_one({"_id": oid})
         if not doc:
             return None
         doc["_id"] = str(doc["_id"])
@@ -119,6 +125,19 @@ class UserService:
             return None
         doc["_id"] = str(doc["_id"])
         return UserInDB(**doc)
+
+    # ----- ROLES -----
+    async def set_app_role(self, user_id: str, app_id: str, role: str) -> Optional[UserInDB]:
+        """Set (or overwrite) the target user's explicit role for one app.
+
+        Only touches `app_roles.<app_id>`. Superuser-target and caller-authz
+        checks live in the route (auth-service#7) — this is the raw write.
+        """
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {f"app_roles.{app_id}": role}},
+        )
+        return await self.get_by_id(user_id)
 
     # ----- VERIFY USER -----
     async def verify_user(self, login: str, password: str) -> Optional[UserInDB]:
