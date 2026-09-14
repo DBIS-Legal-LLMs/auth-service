@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.routes.application_routes import router as application_router
 from .api.routes.auth_routes import router as auth_router
 from .api.routes.jwks_routes import router as jwks_router
+from .api.routes.user_routes import router as user_router
 from .config import get_settings
 
 
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(jwks_router)
     app.include_router(application_router)
+    app.include_router(user_router)
 
     return app
 

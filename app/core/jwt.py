@@ -1,8 +1,8 @@
 """RS256 JWT issuance/verification and JWKS serialization.
 
-Refresh tokens and the `roles` claim land in a follow-up (see auth-service
-issue tracking the "richer features" pass) — this is deliberately just the
-core sign/verify/JWKS loop.
+The resolved per-application `app_roles` claim is added by the login route via
+`extra_claims` (see auth-service#6 / `services/role_resolution.py`). Refresh
+tokens still land in a follow-up.
 """
 
 import base64
