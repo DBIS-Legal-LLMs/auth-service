@@ -18,12 +18,21 @@ from ..models.user_models import UserInDB
 
 
 def resolve_role(user: UserInDB, app: ApplicationInDB) -> str:
-    """The user's effective role for one app: their explicitly-assigned role,
-    else the app's `default_role`.
+    """The user's effective role for one app:
 
-    (auth-service#7 adds the global-superuser override here: a superuser
-    resolves to ``"admin"`` for every app.)
+    1. a global superuser is ``"admin"`` for *every* app (auth-service#7) —
+       computed here at mint time, never written into ``app_roles``, so a
+       superuser is automatically admin of apps that didn't exist when they
+       were promoted;
+    2. otherwise their explicitly-assigned role for the app;
+    3. otherwise the app's ``default_role``.
+
+    Every registered app is guaranteed to define an ``admin`` role
+    (``APP_MISSING_ADMIN_ROLE`` validation, auth-service#5), so step 1 always
+    resolves to a role the app actually knows.
     """
+    if user.is_superuser:
+        return "admin"
     return user.app_roles.get(app.id) or app.default_role
 
 
