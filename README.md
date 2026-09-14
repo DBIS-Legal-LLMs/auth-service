@@ -16,6 +16,8 @@ FastAPI + MongoDB + `python-jose`/`cryptography` (RS256) + `passlib`/`bcrypt`, e
 - `GET /.well-known/jwks.json` — the RSA public key in standard JWK format, so any consumer can verify tokens without ever holding a secret
 - `GET /applications` — the per-application role registry (see below). Public to any authenticated caller; used by the admin panel and by consuming apps to read their role options.
 - `PUT /users/{id}/roles/{app_id}` — assign a user's role for one app (superuser or app-admin only; see *Global superuser tier* below).
+- `PUT /users/{id}/superuser` — grant/revoke the global superuser tier (superuser only, password reauth, last-superuser protection).
+- `DELETE /users/me` — delete your own account (password reauth; blocked for the last remaining superuser).
 - RSA keypair is generated once on first startup and persisted to `KEYS_DIR` (a mounted volume in Docker) — it does **not** regenerate on restart, which would instantly invalidate every previously-issued token. Includes a stable `kid` in both the JWT header and the JWKS response.
 
 ## Per-application role registry
@@ -85,7 +87,18 @@ docker compose exec auth-service python scripts/promote_superuser.py <email-or-u
 ```
 
 It **refuses to run once any superuser exists** — after the bootstrap, every
-further promotion must go through the audited API (auth-service#8).
+further promotion goes through `PUT /users/{id}/superuser` (below).
+
+**Managing the tier after bootstrap** — `PUT /users/{id}/superuser`
+(body: `{"is_superuser": <bool>, "current_password": "<caller's password>"}`):
+
+- caller must already be a superuser (an app-admin can never reach it);
+- caller re-supplies their **own current password** — a valid access token
+  alone is not enough for this specific action;
+- the system always keeps ≥ 1 superuser: revoking the flag from the **last**
+  remaining superuser is refused (`409`), and so is a superuser deleting their
+  own account (`DELETE /users/me`) while they are the last one. Demote/replace
+  first.
 
 ### `PUT /users/{id}/roles/{app_id}`
 
@@ -99,8 +112,7 @@ superuser — their effective role isn't editable per-app by anyone.
 - **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder for this.
 - **`/users/me` (GET/PUT)** — no profile read/update endpoint yet (email, OpenRouter API key, preferred model, etc.). Both RAGulate and GRIPL have known-broken or removed features waiting on this specifically.
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
-- **Superuser-management API** — `PUT /users/{id}/superuser` with password reauthentication + last-superuser protection is auth-service#8; until then `promote_superuser.py` is the only way in and there is no way to demote.
-- **Admin UI** — no frontend yet (auth-service#9); role assignment is the `PUT` endpoint above, superuser bootstrap is the script.
+- **Admin UI** — no frontend yet (auth-service#9); role assignment and superuser management are the `PUT` endpoints above, first-superuser bootstrap is the script.
 
 ## Running locally
 

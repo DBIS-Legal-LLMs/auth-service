@@ -126,6 +126,21 @@ class UserService:
         doc["_id"] = str(doc["_id"])
         return UserInDB(**doc)
 
+    # ----- SUPERUSER TIER -----
+    async def count_superusers(self) -> int:
+        return await self.users.count_documents({"is_superuser": True})
+
+    async def set_superuser(self, user_id: str, value: bool) -> Optional[UserInDB]:
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"is_superuser": value}},
+        )
+        return await self.get_by_id(user_id)
+
+    async def delete_user(self, user_id: str) -> bool:
+        result = await self.users.delete_one({"_id": ObjectId(user_id)})
+        return result.deleted_count > 0
+
     # ----- ROLES -----
     async def set_app_role(self, user_id: str, app_id: str, role: str) -> Optional[UserInDB]:
         """Set (or overwrite) the target user's explicit role for one app.
