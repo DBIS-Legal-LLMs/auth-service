@@ -12,9 +12,9 @@ GRIPL = ApplicationInDB(
     roles=[
         {"key": "admin", "label": "Admin"},
         {"key": "researcher", "label": "Researcher"},
-        {"key": "end-user", "label": "End User"},
+        {"key": "user", "label": "End User"},
     ],
-    default_role="end-user",
+    default_role="user",
 )
 RAGULATE = ApplicationInDB(
     _id="ragulate",
@@ -43,14 +43,14 @@ def test_explicit_role_wins():
 
 def test_missing_role_falls_back_to_app_default():
     user = _user({})
-    assert resolve_role(user, GRIPL) == "end-user"
+    assert resolve_role(user, GRIPL) == "user"
     assert resolve_role(user, RAGULATE) == "user"
 
 
 def test_full_map_covers_every_registered_app():
     user = _user({"ragulate": "admin"})
     assert resolve_app_roles(user, [GRIPL, RAGULATE]) == {
-        "gripl": "end-user",   # not assigned -> GRIPL's default
+        "gripl": "user",       # not assigned -> GRIPL's default
         "ragulate": "admin",   # explicitly assigned
     }
 

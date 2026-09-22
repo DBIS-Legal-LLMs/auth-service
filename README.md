@@ -6,7 +6,7 @@ consuming app can verify tokens locally — no shared secret between repos, no
 per-app copy of user/password logic.
 
 Each consuming app defines its own role vocabulary (e.g. GRIPL's
-`admin`/`dpo`/`researcher`/`end-user`) in a small registry here, and every
+`admin`/`dpo`/`researcher`/`user`) in a small registry here, and every
 token this service issues carries each user's resolved role for *every*
 registered app. `auth-service` owns identity and role bookkeeping; what a
 role is actually allowed to *do* stays each consuming app's own concern.
@@ -113,21 +113,23 @@ any `auth-service` code change:
 ```json
 { "_id": "gripl", "display_name": "GRIPL",
   "roles": [ {"key": "admin", "label": "Admin"}, {"key": "dpo", "label": "Data Protection Officer"},
-             {"key": "researcher", "label": "Researcher"}, {"key": "end-user", "label": "End User"} ],
-  "default_role": "end-user" }
+             {"key": "researcher", "label": "Researcher"}, {"key": "user", "label": "End User"} ],
+  "default_role": "user" }
 ```
 
 Every app's `roles` list **must** include a role keyed `admin` (the global
-superuser tier resolves to it for every app). Registering an app is a rare,
-deployment-time action, so it's **not** exposed over HTTP — use the script,
-inside the running container:
+superuser tier resolves to it for every app) and a role keyed `user` — `user`
+is always the default for anyone with no explicit assignment, so the "no role
+yet" case is named the same way across every consuming app (an app can still
+define additional roles beyond those two, e.g. GRIPL's `dpo`/`researcher`).
+Registering an app is a rare, deployment-time action, so it's **not** exposed
+over HTTP — use the script, inside the running container:
 
 ```bash
 docker compose exec auth-service python scripts/register_application.py gripl \
     --name "GRIPL" \
     --role admin=Admin --role dpo="Data Protection Officer" \
-    --role researcher=Researcher --role end-user="End User" \
-    --default-role end-user
+    --role researcher=Researcher --role user="End User"
 
 docker compose exec auth-service python scripts/register_application.py --list
 ```

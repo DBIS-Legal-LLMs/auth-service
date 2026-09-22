@@ -10,14 +10,16 @@ than to day-to-day admin — so it is deliberately not exposed over HTTP
         --role admin=Admin \
         --role dpo="Data Protection Officer" \
         --role researcher=Researcher \
-        --role end-user="End User" \
-        --default-role end-user
+        --role user="End User"
 
 Re-registering an existing app needs --overwrite. `--list` prints the current
 registry and exits.
 
-The document shape and validation rules (must define an `admin` role, etc.) are
-the model in app/models/application_models.py — this script just feeds it.
+Every app must define both an `admin` role and a `user` role — `user` is
+always the default for anyone with no explicit assignment, so the "no role
+yet" case is named the same way across every consuming app. The document
+shape and validation rules are the model in app/models/application_models.py
+— this script just feeds it.
 """
 
 import argparse
@@ -70,8 +72,7 @@ def main() -> int:
     parser.add_argument("app_key", nargs="?", help="app id, e.g. 'gripl' (lowercase, digits, hyphens)")
     parser.add_argument("--name", help="human-readable display name")
     parser.add_argument("--role", action="append", type=_parse_role, default=[], metavar="KEY=Label",
-                        help="a selectable role; repeat for each. Must include 'admin=...'")
-    parser.add_argument("--default-role", help="role key assigned to users with no explicit role for this app")
+                        help="a selectable role; repeat for each. Must include 'admin=...' and 'user=...'")
     parser.add_argument("--overwrite", action="store_true", help="replace an already-registered app")
     parser.add_argument("--list", action="store_true", help="print the current registry and exit")
     args = parser.parse_args()
@@ -80,9 +81,7 @@ def main() -> int:
         _print_registry()
         return 0
 
-    missing = [name for name, val in
-               (("app_key", args.app_key), ("--name", args.name), ("--default-role", args.default_role))
-               if not val]
+    missing = [name for name, val in (("app_key", args.app_key), ("--name", args.name)) if not val]
     if missing or not args.role:
         parser.error(f"missing required: {', '.join(missing + (['--role'] if not args.role else []))}")
 
@@ -91,7 +90,6 @@ def main() -> int:
             _id=args.app_key,
             display_name=args.name,
             roles=args.role,
-            default_role=args.default_role,
         )
     except ValueError as exc:
         print(f"Invalid application definition: {exc}", file=sys.stderr)

@@ -12,7 +12,7 @@ GRIPL_ROLES = [
     {"key": "admin", "label": "Admin"},
     {"key": "dpo", "label": "Data Protection Officer"},
     {"key": "researcher", "label": "Researcher"},
-    {"key": "end-user", "label": "End User"},
+    {"key": "user", "label": "End User"},
 ]
 
 
@@ -21,7 +21,6 @@ def _app(**overrides):
         "_id": "gripl",
         "display_name": "GRIPL",
         "roles": GRIPL_ROLES,
-        "default_role": "end-user",
     }
     payload.update(overrides)
     return ApplicationCreate(**payload)
@@ -30,23 +29,33 @@ def _app(**overrides):
 def test_valid_application_registers():
     app = _app()
     assert app.id == "gripl"
-    assert [r.key for r in app.roles] == ["admin", "dpo", "researcher", "end-user"]
-    assert app.default_role == "end-user"
+    assert [r.key for r in app.roles] == ["admin", "dpo", "researcher", "user"]
+    assert app.default_role == "user"
+
+
+def test_default_role_defaults_to_user_without_being_passed():
+    app = _app()
+    assert app.default_role == "user"
 
 
 def test_every_app_must_define_an_admin_role():
     with pytest.raises(ValidationError, match="APP_MISSING_ADMIN_ROLE"):
-        _app(roles=[{"key": "user", "label": "User"}], default_role="user")
+        _app(roles=[{"key": "user", "label": "User"}])
 
 
-def test_default_role_must_be_one_of_the_defined_roles():
-    with pytest.raises(ValidationError, match="APP_DEFAULT_ROLE_UNKNOWN"):
-        _app(default_role="ghost")
+def test_every_app_must_define_a_user_role():
+    with pytest.raises(ValidationError, match="APP_MISSING_USER_ROLE"):
+        _app(roles=[{"key": "admin", "label": "Admin"}])
+
+
+def test_default_role_cannot_be_overridden_to_something_else():
+    with pytest.raises(ValidationError, match="APP_DEFAULT_ROLE_MUST_BE_USER"):
+        _app(default_role="admin")
 
 
 def test_roles_cannot_be_empty():
     with pytest.raises(ValidationError, match="APP_NO_ROLES"):
-        _app(roles=[], default_role="admin")
+        _app(roles=[])
 
 
 def test_duplicate_role_keys_rejected():
@@ -54,7 +63,7 @@ def test_duplicate_role_keys_rejected():
         _app(roles=[
             {"key": "admin", "label": "Admin"},
             {"key": "admin", "label": "Administrator"},
-        ], default_role="admin")
+        ])
 
 
 @pytest.mark.parametrize("bad_key", ["GRIPL", "gr ipl", "-gripl", "gripl-", "a", "x" * 60, "grïpl"])

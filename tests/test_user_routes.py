@@ -24,9 +24,9 @@ GRIPL = ApplicationInDB(
     roles=[
         {"key": "admin", "label": "Admin"},
         {"key": "researcher", "label": "Researcher"},
-        {"key": "end-user", "label": "End User"},
+        {"key": "user", "label": "End User"},
     ],
-    default_role="end-user",
+    default_role="user",
 )
 
 
@@ -125,7 +125,7 @@ def test_target_superuser_role_is_not_editable():
     target = _user("root", is_superuser=True)
     client = client_for(caller, [caller, target])
 
-    resp = client.put("/users/root/roles/gripl", json={"role": "end-user"})
+    resp = client.put("/users/root/roles/gripl", json={"role": "researcher"})
 
     assert resp.status_code == 409
     assert "superuser" in resp.json()["detail"]
