@@ -19,8 +19,11 @@ class UserInDB(UserBase):
     password_hash: str
     role: Literal["user", "admin"] = "user"
     # Global superuser tier (auth-service#7): resolves to "admin" for *every*
-    # registered app at token-mint time. Separate from `app_roles` — never
-    # written per-app, and not directly editable via the per-app role endpoint.
+    # registered app at token-mint time, regardless of what `app_roles` holds.
+    # Separate from `app_roles`, and not directly editable via the per-app
+    # role endpoint (409s on a superuser target) — the login backfill is the
+    # only path that ever writes "admin" into a superuser's `app_roles`, and
+    # only for apps they have no entry for yet.
     is_superuser: bool = False
     preferred_llm_provider: str | None = None
     preferred_model: str | None = None

@@ -8,9 +8,13 @@ audience-scoped), so every issued token carries the *full* resolved map:
 Each consuming app reads its own key and ignores the rest — no extra round-trip
 to find out "what's my role here".
 
-Resolution is computed fresh every mint rather than written to the user
-document, so changing an app's `default_role` later immediately applies to
-everyone who was never explicitly assigned a role.
+Resolution itself is computed fresh every mint purely from `is_superuser` and
+the registry, never read back from what's stored — so the *token* is always
+correct. Callers (registration, login) separately persist the outcome into
+`app_roles` for any app a user has no explicit entry for yet, so changing an
+app's `default_role` later only immediately applies to users who still have
+no entry for it; anyone already backfilled keeps that value until explicitly
+reassigned.
 """
 
 from ..models.application_models import ApplicationInDB
@@ -21,9 +25,10 @@ def resolve_role(user: UserInDB, app: ApplicationInDB) -> str:
     """The user's effective role for one app:
 
     1. a global superuser is ``"admin"`` for *every* app (auth-service#7) —
-       computed here at mint time, never written into ``app_roles``, so a
-       superuser is automatically admin of apps that didn't exist when they
-       were promoted;
+       computed here at mint time regardless of what ``app_roles`` holds, so
+       a superuser is automatically admin of apps that didn't exist when they
+       were promoted, even before the login backfill has written anything for
+       that app;
     2. otherwise their explicitly-assigned role for the app;
     3. otherwise the app's ``default_role``.
 

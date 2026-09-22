@@ -153,10 +153,31 @@ Resolution (`services/role_resolution.py`) is computed fresh at mint time:
 2. otherwise the user's explicitly-assigned role for the app;
 3. otherwise the app's `default_role`.
 
-Nothing is written back to the user document, so changing an app's
-`default_role` later immediately affects everyone without an explicit
-assignment. The token is not audience-scoped — each consuming app reads its
-own key from the map and ignores the rest.
+This resolution never depends on what's actually stored — it's recomputed
+from `is_superuser` and the registry every time — but the outcome is also
+persisted back to the user document, so `app_roles` in Mongo stays a
+readable record of what a user actually has rather than something purely
+implicit:
+
+- **registration** snapshots every currently-registered app's `default_role`
+  onto the new user;
+- **every login** backfills `app_roles.<app_id>` for any app the user still
+  has no explicit entry for (e.g. it was registered after the user last
+  logged in) — regular users get the app's `default_role`, superusers get
+  `"admin"`.
+
+Only missing keys are ever filled in this way — an existing explicit
+assignment (yours or one set via the endpoint below) is never overwritten.
+One consequence: once a user's `app_roles.<app_id>` has been backfilled,
+resolution can no longer tell that value apart from a real explicit
+assignment, so that user stops tracking the app's `default_role` if it
+changes later — they keep whatever was backfilled until someone explicitly
+reassigns them. Only users who have never registered/logged in since an app
+existed (still `{}` for it) pick up a `default_role` change automatically.
+The token itself is always correct regardless of persistence — it's
+recomputed from `is_superuser` and the registry on every login, never read
+back from what was last written. The token is not audience-scoped — each
+consuming app reads its own key from the map and ignores the rest.
 
 Assigning a user's role for one app: `PUT /users/{id}/roles/{app_id}` (body
 `{"role": "<role key>"}`) — caller must be a global superuser or an admin of
@@ -167,9 +188,13 @@ superuser's effective role isn't individually editable.
 
 A user document may carry `is_superuser: true` — a tier entirely separate
 from `app_roles`. A superuser resolves to `"admin"` for **every** registered
-app, now and in the future, computed at mint time by iterating the registry —
-never written per-app, so there's nothing to keep in sync when a new app
-registers. Issued tokens carry a top-level `is_superuser` claim too.
+app, now and in the future, computed at mint time by iterating the registry,
+so the *token* is always correct regardless of what `app_roles` holds. The
+DB document itself only gets an explicit `"admin"` written into
+`app_roles.<app_id>` via the login backfill described above, and only for
+apps the superuser doesn't already have an entry for — there's nothing that
+must be kept in sync by hand when a new app registers. Issued tokens carry a
+top-level `is_superuser` claim too.
 
 **Bootstrapping the first superuser** — there's no API path for it (every
 superuser-granting endpoint requires an existing superuser caller). Run,
