@@ -23,9 +23,11 @@ async def generate_username(
 async def register(
     user_in: UserCreate,
     user_service: UserService = Depends(get_user_service),
+    application_service: ApplicationService = Depends(get_application_service),
 ):
     try:
-        user = await user_service.create_user(user_in)
+        applications = await application_service.list_applications()
+        user = await user_service.create_user(user_in, applications)
     except ValueError as e:
         error = e.args[0]
 
@@ -63,6 +65,19 @@ async def login(
     # time, and embed the whole map — each consuming app reads its own key.
     applications = await application_service.list_applications()
     app_roles = resolve_app_roles(user, applications)
+
+    # Backfill: any app the user has no *explicit* app_roles entry for yet
+    # (registered before this user existed, or before the app itself was
+    # registered) gets one written now, so the DB always reflects what a
+    # user effectively has rather than relying on resolution-at-read-time.
+    # Never overwrites an existing explicit assignment.
+    missing_roles = {
+        app.id: ("admin" if user.is_superuser else app.default_role)
+        for app in applications
+        if app.id not in user.app_roles
+    }
+    if missing_roles:
+        await user_service.backfill_app_roles(str(user.id), missing_roles)
 
     token = create_access_token(
         subject=str(user.id),

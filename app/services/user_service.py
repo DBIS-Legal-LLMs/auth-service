@@ -9,6 +9,7 @@ from bson.errors import InvalidId
 from pymongo.asynchronous.database import AsyncDatabase
 
 from ..data import func
+from ..models.application_models import ApplicationInDB
 from ..models.user_models import UserCreate, UserInDB
 from ..core.security import (
     hash_password,
@@ -47,7 +48,9 @@ class UserService:
         return self._db[USERS_COLLECTION]
 
     # ----- CREATE USER -----
-    async def create_user(self, user_in: UserCreate) -> UserInDB:
+    async def create_user(
+        self, user_in: UserCreate, applications: list[ApplicationInDB] | None = None
+    ) -> UserInDB:
         try:
             normalized_email = validate_email_address(user_in.email)
         except ValueError:
@@ -71,6 +74,13 @@ class UserService:
 
         password_hash = hash_password(user_in.password)
 
+        # Snapshot each registered app's default role onto the user document at
+        # creation time, so `app_roles` is always a readable record of what the
+        # user actually has rather than something only resolved implicitly at
+        # login (auth-service#6 follow-up). A superuser still resolves to
+        # "admin" everywhere regardless of what's stored here.
+        app_roles = {app.id: app.default_role for app in (applications or [])}
+
         doc = {
             "email": normalized_email,
             "full_name": user_in.full_name,
@@ -81,7 +91,7 @@ class UserService:
             "preferred_llm_provider": None,
             "preferred_model": None,
             "openrouter_api_key": None,
-            "app_roles": {},
+            "app_roles": app_roles,
             "created_at": datetime.now(timezone.utc),
         }
 
@@ -151,6 +161,21 @@ class UserService:
         await self.users.update_one(
             {"_id": ObjectId(user_id)},
             {"$set": {f"app_roles.{app_id}": role}},
+        )
+        return await self.get_by_id(user_id)
+
+    async def backfill_app_roles(self, user_id: str, roles: dict[str, str]) -> Optional[UserInDB]:
+        """Write explicit `app_roles` entries for apps the user doesn't have one for yet.
+
+        Only ever adds missing keys (the caller is expected to have already
+        filtered to `app.id not in user.app_roles`) — never overwrites an
+        existing explicit assignment.
+        """
+        if not roles:
+            return await self.get_by_id(user_id)
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {f"app_roles.{app_id}": role for app_id, role in roles.items()}},
         )
         return await self.get_by_id(user_id)
 
