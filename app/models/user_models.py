@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class UserBase(BaseModel):
@@ -23,7 +23,6 @@ class UserInDB(UserBase):
     # only path that ever writes "admin" into a superuser's `app_roles`, and
     # only for apps they have no entry for yet.
     is_superuser: bool = False
-    openrouter_api_key: str | None = None
     # Per-consuming-app role, e.g. {"gripl": "user", "ragulate": "admin"}.
     # Not enforced here — each app interprets its own entry.
     app_roles: dict[str, str] = Field(default_factory=dict)
@@ -50,5 +49,33 @@ class UserPublic(UserBase):
             app_roles=user.app_roles,
             created_at=user.created_at,
         )
+
+
+class UserProfile(UserPublic):
+    """`GET/PUT /users/me` only — the one place a user's own secrets are ever
+    returned. Deliberately not part of `UserPublic` (used by register/login
+    and everywhere else a user is echoed back) so a decrypted API key can
+    only ever leave the service through this one endpoint.
+    """
+
+    openrouter_api_key: str | None = None
+
+    @classmethod
+    def from_user(cls, user: UserInDB, openrouter_api_key: str | None) -> "UserProfile":
+        return cls(
+            **UserPublic.from_user(user).model_dump(),
+            openrouter_api_key=openrouter_api_key,
+        )
+
+
+class SetOpenRouterApiKeyRequest(BaseModel):
+    # None/blank clears it. No format check beyond a length cap — OpenRouter's
+    # own key format isn't this service's business to hardcode and validate.
+    openrouter_api_key: str | None = Field(default=None, max_length=200)
+
+    @field_validator("openrouter_api_key")
+    @classmethod
+    def _blank_is_none(cls, value: str | None) -> str | None:
+        return value.strip() or None if value else None
 
 

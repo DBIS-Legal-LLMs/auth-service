@@ -21,6 +21,11 @@ class Settings:
         if origin.strip()
     ]
 
+    # Symmetric key (Fernet, url-safe base64, 32 bytes) for encrypting secrets
+    # at rest (currently: each user's own OpenRouter API key). Generate one
+    # with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secrets_encryption_key: str | None = os.getenv("SECRETS_ENCRYPTION_KEY")
+
 
 @lru_cache
 def get_settings() -> Settings:

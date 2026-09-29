@@ -17,6 +17,7 @@ from ..core.security import (
     validate_email_address,
     validate_password_policy,
 )
+from ..core.secrets import encrypt_secret, decrypt_secret
 
 USERS_COLLECTION = "users"
 
@@ -87,7 +88,6 @@ class UserService:
             "username": username,
             "password_hash": password_hash,
             "is_superuser": False,
-            "openrouter_api_key": None,
             "app_roles": app_roles,
             "created_at": datetime.now(timezone.utc),
         }
@@ -175,6 +175,26 @@ class UserService:
             {"$set": {f"app_roles.{app_id}": role for app_id, role in roles.items()}},
         )
         return await self.get_by_id(user_id)
+
+    # ----- OPENROUTER API KEY -----
+    # Stored encrypted (auth-service#8 follow-up: per-user LLM billing) under
+    # its own field, deliberately outside UserInDB — the only way to read the
+    # decrypted value is through this method, so it can never leak through a
+    # general user-serialization path (UserPublic, logs, etc).
+
+    async def get_openrouter_api_key(self, user_id: str) -> Optional[str]:
+        doc = await self.users.find_one(
+            {"_id": ObjectId(user_id)}, {"openrouter_api_key_encrypted": 1}
+        )
+        encrypted = doc.get("openrouter_api_key_encrypted") if doc else None
+        return decrypt_secret(encrypted) if encrypted else None
+
+    async def set_openrouter_api_key(self, user_id: str, api_key: str | None) -> None:
+        encrypted = encrypt_secret(api_key) if api_key else None
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"openrouter_api_key_encrypted": encrypted}},
+        )
 
     # ----- VERIFY USER -----
     async def verify_user(self, login: str, password: str) -> Optional[UserInDB]:

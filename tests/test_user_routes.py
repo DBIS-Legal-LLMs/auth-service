@@ -45,9 +45,19 @@ def _user(uid: str, *, is_superuser: bool = False, app_roles: dict[str, str] | N
 class FakeUserService:
     def __init__(self, users: list[UserInDB]):
         self.by_id = {u.id: u for u in users}
+        self.openrouter_keys: dict[str, str] = {}
 
     async def get_by_id(self, user_id: str):
         return self.by_id.get(user_id)
+
+    async def get_openrouter_api_key(self, user_id: str):
+        return self.openrouter_keys.get(user_id)
+
+    async def set_openrouter_api_key(self, user_id: str, api_key: str | None):
+        if api_key:
+            self.openrouter_keys[user_id] = api_key
+        else:
+            self.openrouter_keys.pop(user_id, None)
 
     async def set_app_role(self, user_id: str, app_id: str, role: str):
         user = self.by_id[user_id]
@@ -249,3 +259,52 @@ def test_superuser_can_delete_their_own_account_when_another_superuser_remains()
     resp = client.request("DELETE", "/users/me", json={"current_password": PASSWORD})
 
     assert resp.status_code == 204
+
+
+# ----- GET/PUT /users/me — OpenRouter API key (auth-service#8 follow-up) -----
+
+def test_get_my_profile_reports_no_key_when_unset():
+    caller = _user("dave")
+    client = client_for(caller, [caller])
+
+    resp = client.get("/users/me")
+
+    assert resp.status_code == 200
+    assert resp.json()["openrouter_api_key"] is None
+    assert "password_hash" not in resp.json()
+
+
+def test_can_set_my_openrouter_api_key():
+    caller = _user("dave")
+    client = client_for(caller, [caller])
+
+    resp = client.put("/users/me", json={"openrouter_api_key": "sk-or-v1-abc123"})
+
+    assert resp.status_code == 200
+    assert resp.json()["openrouter_api_key"] == "sk-or-v1-abc123"
+
+    resp = client.get("/users/me")
+    assert resp.json()["openrouter_api_key"] == "sk-or-v1-abc123"
+
+
+def test_setting_an_empty_key_clears_it():
+    caller = _user("dave")
+    client = client_for(caller, [caller])
+    client.put("/users/me", json={"openrouter_api_key": "sk-or-v1-abc123"})
+
+    resp = client.put("/users/me", json={"openrouter_api_key": "   "})
+
+    assert resp.status_code == 200
+    assert resp.json()["openrouter_api_key"] is None
+
+
+def test_my_openrouter_api_key_is_never_returned_from_other_endpoints():
+    caller = _user("dave", app_roles={"gripl": "admin"})
+    target = _user("eve")
+    client = client_for(caller, [caller, target])
+    client.put("/users/me", json={"openrouter_api_key": "sk-or-v1-abc123"})
+
+    # Every other user-echoing endpoint returns UserPublic, not UserProfile —
+    # the key must never appear outside GET/PUT /users/me.
+    resp = client.put("/users/eve/roles/gripl", json={"role": "researcher"})
+    assert "openrouter_api_key" not in resp.json()

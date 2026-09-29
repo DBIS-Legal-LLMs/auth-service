@@ -100,6 +100,8 @@ domain (`@gmail.com` etc.), not `@example.com`.
 | `GET` | `/applications` | any user | The per-application role registry (see below) |
 | `PUT` | `/users/{id}/roles/{app_id}` | superuser or admin of that app | Assign a user's role for one app |
 | `PUT` | `/users/{id}/superuser` | superuser + own password | Grant/revoke the global superuser tier |
+| `GET` | `/users/me` | self | Your own profile, including your OpenRouter API key if set |
+| `PUT` | `/users/me` | self | Set/clear your own OpenRouter API key |
 | `DELETE` | `/users/me` | self + own password | Delete your own account |
 
 ## Registering a New App, and How Roles Work
@@ -211,12 +213,36 @@ further promotion goes through `PUT /users/{id}/superuser`, which:
 - requires the caller to re-supply their **own current password** — a valid access token alone isn't enough for this specific action;
 - refuses (`409`) to revoke the flag from the **last** remaining superuser, and refuses the same superuser deleting their own account (`DELETE /users/me`) while they're the last one — demote/replace first.
 
+### OpenRouter API key
+
+Every consuming app's LLM calls are billed to the *calling user's own*
+OpenRouter key — auth-service never holds a shared key of its own, and
+consuming apps aren't meant to either. A user sets/changes their key via
+`PUT /users/me` (body `{"openrouter_api_key": "<key>"}`, or `null`/blank to
+clear it) and reads it back — the only endpoint that ever does — via
+`GET /users/me`. No password reauthentication on the `PUT`, unlike the
+superuser/delete-account endpoints: a stolen token setting a different key
+isn't the catastrophic case those guard against, and this is expected to be
+rotated routinely.
+
+Stored encrypted at rest (`app/core/secrets.py`, Fernet symmetric encryption)
+under its own field, kept out of `UserInDB`/`UserPublic` entirely so it can
+never leak through a general user-serialization path — `UserService`'s
+`get_openrouter_api_key`/`set_openrouter_api_key` are the only way to touch
+it. Requires `SECRETS_ENCRYPTION_KEY` (see `.env.example`); losing or
+rotating that key makes every already-stored key undecryptable.
+
+A consuming app (GRIPL, RAGulate) fetches the calling user's key by calling
+`GET /users/me` itself, forwarding the *same* bearer token it already
+verified locally — no service-to-service secret needed, since auth-service
+independently re-verifies that token before returning anything.
+
 ## TODOs
 
 *(by design, staged as follow-up work)*
 
 - **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder.
-- **`/users/me` (GET/PUT)** — no profile read/update endpoint yet (email, OpenRouter API key, preferred model, etc.). Both RAGulate and GRIPL have known-broken or removed features waiting on this specifically.
+- **`/users/me` (GET/PUT)** — landed for the OpenRouter API key specifically (see below); still no read/update for other profile fields (email, preferred model, etc.).
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
 - **Admin UI** — no frontend yet; role assignment and superuser management are the `PUT` endpoints above, first-superuser bootstrap is the script.
 - **Formal integration guide** — for now, the working integrations are the best reference: RAGulate_v2's `Backend/api_v2/app/core/jwt_verification.py` (Python) and GRIPL-v2's `JwtAuthenticationWebFilter` (Kotlin/Spring WebFlux). The short version for a new consumer: fetch `GET /.well-known/jwks.json`, cache it, verify incoming `Authorization: Bearer <token>` as a standard RS256 JWT against the matching `kid`. The verified `sub` claim is the user's id.

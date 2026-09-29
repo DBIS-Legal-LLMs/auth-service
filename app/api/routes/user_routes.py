@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from ...core.deps import get_application_service, get_current_user, get_user_service
 from ...core.security import verify_password
-from ...models.user_models import UserInDB, UserPublic
+from ...models.user_models import SetOpenRouterApiKeyRequest, UserInDB, UserProfile, UserPublic
 from ...services.application_service import ApplicationService
 from ...services.role_resolution import resolve_role
 from ...services.user_service import UserService
@@ -127,6 +127,39 @@ async def set_superuser(
 
     updated = await user_service.set_superuser(user_id, body.is_superuser)
     return UserPublic.from_user(updated)
+
+
+@router.get("/me", response_model=UserProfile)
+async def get_my_profile(
+    caller: UserInDB = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service),
+):
+    """The caller's own profile, including their OpenRouter API key if set.
+
+    The only endpoint that ever returns a decrypted secret — used both by
+    frontends (account settings) and by consuming apps (GRIPL, RAGulate)
+    acting on the caller's behalf, forwarding the caller's own bearer token,
+    to fetch the key their own LLM calls should be billed against.
+    """
+    api_key = await user_service.get_openrouter_api_key(str(caller.id))
+    return UserProfile.from_user(caller, api_key)
+
+
+@router.put("/me", response_model=UserProfile)
+async def update_my_profile(
+    body: SetOpenRouterApiKeyRequest,
+    caller: UserInDB = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service),
+):
+    """Set or clear the caller's own OpenRouter API key.
+
+    No password reauthentication (unlike the superuser/delete-account
+    endpoints) — a stolen token setting a *different* key isn't the
+    catastrophic case that granting superuser or deleting the account is, and
+    this is expected to be rotated routinely.
+    """
+    await user_service.set_openrouter_api_key(str(caller.id), body.openrouter_api_key)
+    return UserProfile.from_user(caller, body.openrouter_api_key)
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
