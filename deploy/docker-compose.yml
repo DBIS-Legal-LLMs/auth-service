@@ -1,0 +1,113 @@
+# auth-service on the server — one stack per environment (prod / dev).
+#
+# The same file runs both; everything environment-specific comes from the .env
+# next to it (ENVIRONMENT, AUTH_HOST, IMAGE_TAG, secrets). See GRIPL-v2's
+# deploy/README.md for the server layout (shared Traefik, per-environment networks).
+#
+# The service name `auth-service` is what GRIPL (and later RAGulate) call inside
+# the environment network, so it must stay as it is.
+#
+# The server is reachable from the internet. By default auth-service is NOT routed
+# publicly: the apps reach it inside the environment network, and GRIPL's frontend
+# proxies only /auth/* (login, register) to it. Set AUTH_EXPOSE=true to give it its
+# own public name (needed only if a browser app has to call it directly).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  auth-service:
+    image: ${IMAGE_REGISTRY:-ghcr.io/dbis-legal-llms}/auth-service:${IMAGE_TAG:?set IMAGE_TAG in .env}
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      auth-mongo:
+        condition: service_healthy
+    mem_limit: ${MEM_AUTH:-512m}
+    environment:
+      - MONGO_URL=mongodb://${MONGO_ROOT_USER:-auth}:${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}@auth-mongo:27017/?authSource=admin
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-auth_db}
+      - KEYS_DIR=/app/keys
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:?set SECRETS_ENCRYPTION_KEY in .env}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      - REFRESH_TOKEN_EXPIRE_DAYS=${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      # browser origins that call auth-service directly; GRIPL proxies server-side and needs none
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+    volumes:
+      - auth-keys:/app/keys   # RSA signing key, generated on first start — losing it logs everybody out
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    labels:
+      - traefik.enable=${AUTH_EXPOSE:-false}
+      - traefik.docker.network=dbis-${ENVIRONMENT:?set ENVIRONMENT in .env}
+      - traefik.http.services.auth-${ENVIRONMENT}.loadbalancer.server.port=8000
+      - traefik.http.middlewares.auth-${ENVIRONMENT}-allow.ipallowlist.sourcerange=${ALLOWED_CIDRS:-0.0.0.0/0,::/0}
+
+      - traefik.http.routers.auth-${ENVIRONMENT}.rule=Host(`${AUTH_HOST:-auth.invalid}`)
+      - traefik.http.routers.auth-${ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}.middlewares=auth-${ENVIRONMENT}-allow,secure-headers@file
+      # login and registration: slowed down per client IP (there is no lockout yet)
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.rule=Host(`${AUTH_HOST:-auth.invalid}`) && Path(`/auth/login`)
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.priority=100
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.middlewares=auth-${ENVIRONMENT}-allow,login-ratelimit@file,secure-headers@file
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.rule=Host(`${AUTH_HOST:-auth.invalid}`) && Path(`/auth/register`)
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.priority=100
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.middlewares=auth-${ENVIRONMENT}-allow,register-ratelimit@file,secure-headers@file
+      # interactive API docs are for developers, not for the internet
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.rule=Host(`${AUTH_HOST:-auth.invalid}`) && (Path(`/docs`) || Path(`/redoc`) || Path(`/openapi.json`))
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.priority=1000
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.middlewares=deny-all@file
+    networks:
+      - default
+      - env
+
+  # Only reachable from auth-service (private network, no published port).
+  auth-mongo:
+    image: mongo:7.0.25   # pinned: upgrade deliberately
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: ${MEM_MONGO:-768m}
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER:-auth}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+    volumes:
+      - auth-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"db.adminCommand('ping').ok\" | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - default
+
+volumes:
+  auth-keys:
+  auth-mongo-data:
+
+networks:
+  # private to this stack: the database lives here only
+  default:
+  # shared with the other stacks of the same environment (GRIPL) and Traefik;
+  # created by GRIPL-v2's deploy/traefik
+  env:
+    external: true
+    name: dbis-${ENVIRONMENT}
