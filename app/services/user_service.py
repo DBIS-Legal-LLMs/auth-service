@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo.asynchronous.database import AsyncDatabase
 
 from ..data import func
+from ..models.application_models import ApplicationInDB
 from ..models.user_models import UserCreate, UserInDB
 from ..core.security import (
     hash_password,
@@ -15,6 +17,7 @@ from ..core.security import (
     validate_email_address,
     validate_password_policy,
 )
+from ..core.secrets import encrypt_secret, decrypt_secret
 
 USERS_COLLECTION = "users"
 
@@ -46,7 +49,9 @@ class UserService:
         return self._db[USERS_COLLECTION]
 
     # ----- CREATE USER -----
-    async def create_user(self, user_in: UserCreate) -> UserInDB:
+    async def create_user(
+        self, user_in: UserCreate, applications: list[ApplicationInDB] | None = None
+    ) -> UserInDB:
         try:
             normalized_email = validate_email_address(user_in.email)
         except ValueError:
@@ -70,16 +75,20 @@ class UserService:
 
         password_hash = hash_password(user_in.password)
 
+        # Snapshot each registered app's default role onto the user document at
+        # creation time, so `app_roles` is always a readable record of what the
+        # user actually has rather than something only resolved implicitly at
+        # login (auth-service#6 follow-up). A superuser still resolves to
+        # "admin" everywhere regardless of what's stored here.
+        app_roles = {app.id: app.default_role for app in (applications or [])}
+
         doc = {
             "email": normalized_email,
             "full_name": user_in.full_name,
             "username": username,
             "password_hash": password_hash,
-            "role": "user",
-            "preferred_llm_provider": None,
-            "preferred_model": None,
-            "openrouter_api_key": None,
-            "app_roles": {},
+            "is_superuser": False,
+            "app_roles": app_roles,
             "created_at": datetime.now(timezone.utc),
         }
 
@@ -107,7 +116,11 @@ class UserService:
         return UserInDB(**doc)
 
     async def get_by_id(self, user_id: str) -> Optional[UserInDB]:
-        doc = await self.users.find_one({"_id": ObjectId(user_id)})
+        try:
+            oid = ObjectId(user_id)
+        except (InvalidId, TypeError):
+            return None
+        doc = await self.users.find_one({"_id": oid})
         if not doc:
             return None
         doc["_id"] = str(doc["_id"])
@@ -119,6 +132,69 @@ class UserService:
             return None
         doc["_id"] = str(doc["_id"])
         return UserInDB(**doc)
+
+    # ----- SUPERUSER TIER -----
+    async def count_superusers(self) -> int:
+        return await self.users.count_documents({"is_superuser": True})
+
+    async def set_superuser(self, user_id: str, value: bool) -> Optional[UserInDB]:
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"is_superuser": value}},
+        )
+        return await self.get_by_id(user_id)
+
+    async def delete_user(self, user_id: str) -> bool:
+        result = await self.users.delete_one({"_id": ObjectId(user_id)})
+        return result.deleted_count > 0
+
+    # ----- ROLES -----
+    async def set_app_role(self, user_id: str, app_id: str, role: str) -> Optional[UserInDB]:
+        """Set (or overwrite) the target user's explicit role for one app.
+
+        Only touches `app_roles.<app_id>`. Superuser-target and caller-authz
+        checks live in the route (auth-service#7) — this is the raw write.
+        """
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {f"app_roles.{app_id}": role}},
+        )
+        return await self.get_by_id(user_id)
+
+    async def backfill_app_roles(self, user_id: str, roles: dict[str, str]) -> Optional[UserInDB]:
+        """Write explicit `app_roles` entries for apps the user doesn't have one for yet.
+
+        Only ever adds missing keys (the caller is expected to have already
+        filtered to `app.id not in user.app_roles`) — never overwrites an
+        existing explicit assignment.
+        """
+        if not roles:
+            return await self.get_by_id(user_id)
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {f"app_roles.{app_id}": role for app_id, role in roles.items()}},
+        )
+        return await self.get_by_id(user_id)
+
+    # ----- OPENROUTER API KEY -----
+    # Stored encrypted (auth-service#8 follow-up: per-user LLM billing) under
+    # its own field, deliberately outside UserInDB — the only way to read the
+    # decrypted value is through this method, so it can never leak through a
+    # general user-serialization path (UserPublic, logs, etc).
+
+    async def get_openrouter_api_key(self, user_id: str) -> Optional[str]:
+        doc = await self.users.find_one(
+            {"_id": ObjectId(user_id)}, {"openrouter_api_key_encrypted": 1}
+        )
+        encrypted = doc.get("openrouter_api_key_encrypted") if doc else None
+        return decrypt_secret(encrypted) if encrypted else None
+
+    async def set_openrouter_api_key(self, user_id: str, api_key: str | None) -> None:
+        encrypted = encrypt_secret(api_key) if api_key else None
+        await self.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"openrouter_api_key_encrypted": encrypted}},
+        )
 
     # ----- VERIFY USER -----
     async def verify_user(self, login: str, password: str) -> Optional[UserInDB]:

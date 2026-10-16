@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from ...models.user_models import UserCreate, UserPublic
+from ...services.application_service import ApplicationService
+from ...services.role_resolution import resolve_app_roles
 from ...services.user_service import UserService
 from ...core.jwt import create_access_token
-from ...core.deps import get_user_service
+from ...core.deps import get_application_service, get_user_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,9 +23,11 @@ async def generate_username(
 async def register(
     user_in: UserCreate,
     user_service: UserService = Depends(get_user_service),
+    application_service: ApplicationService = Depends(get_application_service),
 ):
     try:
-        user = await user_service.create_user(user_in)
+        applications = await application_service.list_applications()
+        user = await user_service.create_user(user_in, applications)
     except ValueError as e:
         error = e.args[0]
 
@@ -41,23 +45,14 @@ async def register(
 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registration failed")
 
-    return UserPublic(
-        id=str(user.id),
-        email=user.email,
-        full_name=user.full_name,
-        username=user.username,
-        role=user.role,
-        preferred_llm_provider=user.preferred_llm_provider,
-        preferred_model=user.preferred_model,
-        app_roles=user.app_roles,
-        created_at=user.created_at,
-    )
+    return UserPublic.from_user(user)
 
 
 @router.post("/login")
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     user_service: UserService = Depends(get_user_service),
+    application_service: ApplicationService = Depends(get_application_service),
 ):
     user = await user_service.verify_user(form_data.username, form_data.password)
     if not user:
@@ -66,7 +61,28 @@ async def login(
             detail="Incorrect email/username or password",
         )
 
-    token = create_access_token(subject=str(user.id))
+    # Resolve the user's effective role for every registered app, fresh at mint
+    # time, and embed the whole map — each consuming app reads its own key.
+    applications = await application_service.list_applications()
+    app_roles = resolve_app_roles(user, applications)
+
+    # Backfill: any app the user has no *explicit* app_roles entry for yet
+    # (registered before this user existed, or before the app itself was
+    # registered) gets one written now, so the DB always reflects what a
+    # user effectively has rather than relying on resolution-at-read-time.
+    # Never overwrites an existing explicit assignment.
+    missing_roles = {
+        app.id: ("admin" if user.is_superuser else app.default_role)
+        for app in applications
+        if app.id not in user.app_roles
+    }
+    if missing_roles:
+        await user_service.backfill_app_roles(str(user.id), missing_roles)
+
+    token = create_access_token(
+        subject=str(user.id),
+        extra_claims={"app_roles": app_roles, "is_superuser": user.is_superuser},
+    )
 
     return {
         "access_token": token,
@@ -76,10 +92,8 @@ async def login(
             "username": user.username,
             "email": user.email,
             "full_name": user.full_name,
-            "role": user.role,
-            "preferred_llm_provider": user.preferred_llm_provider,
-            "preferred_model": user.preferred_model,
-            "app_roles": user.app_roles,
+            "is_superuser": user.is_superuser,
+            "app_roles": app_roles,
             "created_at": user.created_at.isoformat(),
         },
     }

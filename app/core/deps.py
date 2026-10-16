@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from pymongo.asynchronous.database import AsyncDatabase
 
 from ..db.mongo import get_database
+from ..services.application_service import ApplicationService
 from ..services.user_service import UserService
 from .jwt import verify_access_token
 from ..models.user_models import UserInDB
@@ -16,6 +17,10 @@ def get_db():
 
 def get_user_service(db: AsyncDatabase = Depends(get_db)) -> UserService:
     return UserService(db)
+
+
+def get_application_service(db: AsyncDatabase = Depends(get_db)) -> ApplicationService:
+    return ApplicationService(db)
 
 
 async def get_current_user(

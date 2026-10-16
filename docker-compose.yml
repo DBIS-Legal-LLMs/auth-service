@@ -23,6 +23,13 @@ services:
     image: mongo:7
     container_name: auth-mongo
     restart: unless-stopped
+    # Exposed to the host for local inspection (e.g. MongoDB Compass) —
+    # 27017 is taken by RAGulate's own mongodb container on this machine, so
+    # this uses 27018 on the host; the container itself still listens on the
+    # standard 27017 internally. No auth configured — fine for local dev
+    # only, don't do this on a shared/production host.
+    ports:
+      - "27018:27017"
     volumes:
       - auth-mongo-data:/data/db
     networks:
