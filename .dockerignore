@@ -1,0 +1,19 @@
+# Keep secrets and clutter out of the build context. The Dockerfile only copies
+# requirements.txt, app/ and scripts/, this guards against a future `COPY . .`.
+.git
+.github
+.env
+.env.*
+!.env.example
+keys/
+*.pem
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.idea/
+.vscode/
+deploy/
+README.md
