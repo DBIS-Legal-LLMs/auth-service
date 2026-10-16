@@ -11,12 +11,12 @@
 #   * users' stored OpenRouter keys — they are encrypted with prod's
 #     SECRETS_ENCRYPTION_KEY and would be unreadable in dev anyway, so they are
 #     removed from the copy. Users re-enter them in dev if they need them there.
-# Prod is only ever READ. Environment: DBIS_ROOT (default /srv/dbis-universe).
+# Prod is only ever READ. Environment: DBIS_ROOT (default /srv/gripl).
 set -euo pipefail
 
-root=${DBIS_ROOT:-/srv/dbis-universe}
-prod="$root/auth/prod"
-dev="$root/auth/dev"
+root=${DBIS_ROOT:-/srv/gripl}
+prod="$root/prod/auth"
+dev="$root/dev/auth"
 assume_yes=0
 for arg in "$@"; do
   case "$arg" in

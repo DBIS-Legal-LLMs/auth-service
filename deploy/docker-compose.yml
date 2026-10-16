@@ -6,10 +6,22 @@
 #
 # The service name `auth-service` is what GRIPL (and later RAGulate) call inside
 # the environment network, so it must stay as it is.
+#
+# The server is reachable from the internet. By default auth-service is NOT routed
+# publicly: the apps reach it inside the environment network, and GRIPL's frontend
+# proxies only /auth/* (login, register) to it. Set AUTH_EXPOSE=true to give it its
+# own public name (needed only if a browser app has to call it directly).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   auth-service:
     image: ${IMAGE_REGISTRY:-ghcr.io/dbis-legal-llms}/auth-service:${IMAGE_TAG:?set IMAGE_TAG in .env}
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       auth-mongo:
         condition: service_healthy
@@ -32,18 +44,36 @@ services:
       retries: 5
       start_period: 15s
     labels:
-      - traefik.enable=true
+      - traefik.enable=${AUTH_EXPOSE:-false}
       - traefik.docker.network=dbis-${ENVIRONMENT:?set ENVIRONMENT in .env}
       - traefik.http.services.auth-${ENVIRONMENT}.loadbalancer.server.port=8000
-      # plain HTTP (redirected to HTTPS by Traefik once HTTPS is switched on)
-      - traefik.http.routers.auth-${ENVIRONMENT}.rule=Host(`${AUTH_HOST:?set AUTH_HOST in .env}`)
-      - traefik.http.routers.auth-${ENVIRONMENT}.entrypoints=web
+      - traefik.http.middlewares.auth-${ENVIRONMENT}-allow.ipallowlist.sourcerange=${ALLOWED_CIDRS:-0.0.0.0/0,::/0}
+
+      - traefik.http.routers.auth-${ENVIRONMENT}.rule=Host(`${AUTH_HOST:-auth.invalid}`)
+      - traefik.http.routers.auth-${ENVIRONMENT}.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}.tls=true
       - traefik.http.routers.auth-${ENVIRONMENT}.service=auth-${ENVIRONMENT}
-      # HTTPS (idle until Traefik runs with docker-compose.https.yml)
-      - traefik.http.routers.auth-${ENVIRONMENT}-secure.rule=Host(`${AUTH_HOST}`)
-      - traefik.http.routers.auth-${ENVIRONMENT}-secure.entrypoints=websecure
-      - traefik.http.routers.auth-${ENVIRONMENT}-secure.tls=true
-      - traefik.http.routers.auth-${ENVIRONMENT}-secure.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}.middlewares=auth-${ENVIRONMENT}-allow,secure-headers@file
+      # login and registration: slowed down per client IP (there is no lockout yet)
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.rule=Host(`${AUTH_HOST:-auth.invalid}`) && Path(`/auth/login`)
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.priority=100
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-login.middlewares=auth-${ENVIRONMENT}-allow,login-ratelimit@file,secure-headers@file
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.rule=Host(`${AUTH_HOST:-auth.invalid}`) && Path(`/auth/register`)
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.priority=100
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-register.middlewares=auth-${ENVIRONMENT}-allow,register-ratelimit@file,secure-headers@file
+      # interactive API docs are for developers, not for the internet
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.rule=Host(`${AUTH_HOST:-auth.invalid}`) && (Path(`/docs`) || Path(`/redoc`) || Path(`/openapi.json`))
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.priority=1000
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.entrypoints=websecure
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.tls=true
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.service=auth-${ENVIRONMENT}
+      - traefik.http.routers.auth-${ENVIRONMENT}-docs-blocked.middlewares=deny-all@file
     networks:
       - default
       - env
@@ -52,6 +82,7 @@ services:
   auth-mongo:
     image: mongo:7.0.25   # pinned: upgrade deliberately
     restart: unless-stopped
+    logging: *default-logging
     mem_limit: ${MEM_MONGO:-768m}
     command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
     environment:
