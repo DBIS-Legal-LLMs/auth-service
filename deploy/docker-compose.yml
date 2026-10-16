@@ -50,7 +50,7 @@ services:
 
   # Only reachable from auth-service (private network, no published port).
   auth-mongo:
-    image: mongo:7
+    image: mongo:7.0.25   # pinned: upgrade deliberately
     restart: unless-stopped
     mem_limit: ${MEM_MONGO:-768m}
     command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
