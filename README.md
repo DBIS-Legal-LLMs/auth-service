@@ -106,6 +106,22 @@ domain (`@gmail.com` etc.), not `@example.com`.
 
 ## Registering a New App, and How Roles Work
 
+### Promoting users and assigning roles
+
+`scripts/promote_superuser.py` only bootstraps the *first* superuser. Everybody else is promoted through the
+service's own API, which needs a superuser and their password again. `scripts/admin_user.py` does that from inside
+the container (nothing has to be exposed); it asks for your username and password:
+
+```bash
+docker compose exec auth-service python scripts/admin_user.py superuser <user>            # grant the global superuser tier
+docker compose exec auth-service python scripts/admin_user.py superuser <user> --revoke   # take it away again
+docker compose exec auth-service python scripts/admin_user.py role <user> gripl researcher   # a role for one app
+docker compose exec auth-service python scripts/admin_user.py show <user>                 # id, superuser flag and roles
+```
+
+`<user>` is a username or an e-mail address. The affected user has to log in again to get a token with the new
+role. A superuser's role cannot be edited per app (`409`), and the last superuser cannot be demoted.
+
 ### Registering an app
 
 Each consuming app (GRIPL, RAGulate, future DBIS tools) defines its own role
