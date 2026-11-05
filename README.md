@@ -253,6 +253,32 @@ A consuming app (GRIPL, RAGulate) fetches the calling user's key by calling
 verified locally — no service-to-service secret needed, since auth-service
 independently re-verifies that token before returning anything.
 
+## Deployment and server operations
+
+On the shared server, auth-service runs as two stacks (`/srv/gripl/dev/auth` and `/srv/gripl/prod/auth`), each with
+its own MongoDB, signing key and `SECRETS_ENCRYPTION_KEY`. The stack files live in `deploy/`
+(`docker-compose.yml`, `env.example`); the helper scripts are in `deploy/scripts/`.
+
+The server-wide tutorials (updater, backups, releases, rollback, restore, users and roles) are maintained in
+[GRIPL-v2/docs](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/tree/dev/docs). They apply to this service as well, and
+the update and backup script is shared (`GRIPL-v2/deploy/scripts/update-stack.sh`).
+
+| Script | What it does |
+|---|---|
+| `deploy/scripts/clone-prod-to-dev.sh [--yes]` | Replaces the dev database with a copy of prod (users, roles, application registry). Prod is only read. Use it to test a release against real data. |
+| `deploy/scripts/clone-dev-to-prod.sh [--force] [--keep-dev-stopped] [--yes]` | One-time cutover: copies the dev database into an **empty** prod, so the people working on dev log in on prod with the same accounts and the same user ids. Dev is only read. |
+
+Both scripts keep the RSA signing key of each environment separate (a token minted on dev must never be accepted by
+prod), and both remove the stored OpenRouter keys from the copy, because they are encrypted with the source
+environment's `SECRETS_ENCRYPTION_KEY` and cannot be read in the other one. Users enter their key again under
+Account Settings. If both stacks deliberately share one `SECRETS_ENCRYPTION_KEY`, `clone-dev-to-prod.sh` keeps the keys.
+
+`clone-dev-to-prod.sh` stops the auth-service containers of both stacks while it copies, refuses a prod that already
+has users (unless `--force`, which replaces prod's database), refuses an empty dev, starts dev again at the end and
+prints user and application counts of both sides. Everyone has to log in once more afterwards. Run it together
+with its GRIPL counterpart, since GRIPL's data is owned by the auth user id; the full procedure is in
+[docs/move-dev-to-prod.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/move-dev-to-prod.md).
+
 ## TODOs
 
 *(by design, staged as follow-up work)*
