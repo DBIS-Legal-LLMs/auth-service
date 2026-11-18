@@ -3,6 +3,9 @@ import os
 
 
 class Settings:
+    # Build label baked into the image by CI (Dockerfile ARG APP_VERSION), e.g. "v1.2.3"
+    app_version: str = os.getenv("APP_VERSION", "dev")
+
     # MongoDB
     mongo_url: str = os.getenv("MONGO_URL", "mongodb://localhost:27017")
     mongo_db_name: str = os.getenv("MONGO_DB_NAME", "auth_service")
