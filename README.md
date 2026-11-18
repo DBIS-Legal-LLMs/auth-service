@@ -52,7 +52,7 @@ Starts:
 ### 3. Verify it's up
 
 ```bash
-curl http://localhost:8100/health                        # {"status":"ok"}
+curl http://localhost:8100/health                        # {"status":"ok","version":"dev"}
 curl http://localhost:8100/.well-known/jwks.json          # the RSA signing key, in JWK format
 ```
 
@@ -92,7 +92,7 @@ domain (`@gmail.com` etc.), not `@example.com`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | — | Liveness check |
+| `GET` | `/health` | — | Liveness check; also returns the build label (`version`, e.g. `v1.2.3`; `dev` for a local build) |
 | `POST` | `/auth/register` | — | Create an account (email, username, password) |
 | `GET` | `/auth/register/genuser` | — | Suggest a random unique username |
 | `POST` | `/auth/login` | — | OAuth2 password form (`username` accepts email *or* username) → signed access token (carrying `app_roles` + `is_superuser`) + public profile |
@@ -252,6 +252,29 @@ A consuming app (GRIPL, RAGulate) fetches the calling user's key by calling
 `GET /users/me` itself, forwarding the *same* bearer token it already
 verified locally — no service-to-service secret needed, since auth-service
 independently re-verifies that token before returning anything.
+
+## Releases and promotion
+
+Versions are computed, never typed. The branch rules, the commit prefixes and the promotion steps are the same as in
+GRIPL and are explained once, in GRIPL-v2: [develop-and-release.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/develop-and-release.md)
+(branches, squash merge, prefix to version table) and [deploy-to-prod.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/deploy-to-prod.md)
+(promote, verify, roll back). What differs here:
+
+- There is **one image**, `ghcr.io/dbis-legal-llms/auth-service`, with the tags `:dev`, `:sha-<commit>`, `:X.Y.Z` and `:prod`.
+- The version is built into the image (build argument `APP_VERSION`, see `Dockerfile`) and returned by `GET /health` as
+  `version` (`v1.2.3`; a pull request build is prefixed with its branch). A local build reports `dev`.
+- Tags and GitHub Releases (`vX.Y.Z`) of this repository are independent of GRIPL's.
+- Only pushes to `dev` publish an image. `main` builds nothing: merging `dev` into `main` runs `.github/workflows/promote.yml`,
+  which points `:prod` at the newest `:X.Y.Z` image (no rebuild) and clears the pre-release flag of the releases up to it.
+- To roll prod back, run the **Promote** workflow by hand on `main` with an older version (Actions, *Run workflow*).
+  On the server, `IMAGE_TAG` in `/srv/gripl/prod/auth/.env` can be pinned to a version instead (it ships as `prod`).
+
+| What | Where |
+|---|---|
+| Version rules (`fix:`/`perf:` patch, `feat:` minor, `!` or `BREAKING CHANGE:` major, others none) | `.github/scripts/next-version.sh`; run it in a checkout to see the next version |
+| Test, version, image, release jobs | `.github/workflows/ci.yml` |
+| Pull request title must be a conventional commit | `.github/workflows/pr-title.yml` |
+| Move `:prod` to a version | `.github/workflows/promote.yml` |
 
 ## Deployment and server operations
 
