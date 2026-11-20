@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
-from ...core.deps import get_application_service, get_current_user, get_user_service
+from ...core.deps import get_application_service, get_current_user, get_refresh_token_service, get_user_service
 from ...core.security import verify_password
 from ...models.user_models import SetOpenRouterApiKeyRequest, UserInDB, UserProfile, UserPublic
 from ...services.application_service import ApplicationService
+from ...services.refresh_token_service import RefreshTokenService
 from ...services.role_resolution import resolve_role
 from ...services.user_service import UserService
 
@@ -98,6 +99,7 @@ async def set_superuser(
     body: SuperuserAssignment,
     caller: UserInDB = Depends(get_current_user),
     user_service: UserService = Depends(get_user_service),
+    refresh_tokens: RefreshTokenService = Depends(get_refresh_token_service),
 ):
     """Grant or revoke the global superuser tier on a user (auth-service#8).
 
@@ -119,13 +121,17 @@ async def set_superuser(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    if target.is_superuser and not body.is_superuser and await user_service.count_superusers() <= 1:
+    was_superuser = target.is_superuser
+    if was_superuser and not body.is_superuser and await user_service.count_superusers() <= 1:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot demote the last remaining superuser",
         )
 
     updated = await user_service.set_superuser(user_id, body.is_superuser)
+    if was_superuser and not body.is_superuser:
+        # a demoted superuser must not keep renewing a session that was minted with the old tier
+        await refresh_tokens.revoke_all_for_user(user_id)
     return UserPublic.from_user(updated)
 
 
@@ -167,6 +173,7 @@ async def delete_own_account(
     body: AccountDeletion,
     caller: UserInDB = Depends(get_current_user),
     user_service: UserService = Depends(get_user_service),
+    refresh_tokens: RefreshTokenService = Depends(get_refresh_token_service),
 ):
     """Delete the caller's own account (auth-service#8).
 
@@ -182,4 +189,5 @@ async def delete_own_account(
         )
 
     await user_service.delete_user(str(caller.id))
+    await refresh_tokens.revoke_all_for_user(str(caller.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

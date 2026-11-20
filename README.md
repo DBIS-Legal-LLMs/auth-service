@@ -36,7 +36,7 @@ cp .env.example .env
 | `MONGO_URL` / `MONGO_DB_NAME` | Mongo connection — pre-filled correctly for the Docker Compose setup below |
 | `KEYS_DIR` | Where the RSA signing keypair is generated/persisted. In Docker this is a named volume (`auth-service-keys`) — don't remove that volume unless you're OK invalidating every token issued so far |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (default 15) |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | Reserved for the not-yet-implemented refresh token flow |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Lifetime of a login session, i.e. of its refresh tokens (default 30), counted from the login |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed browser origins. Only matters for apps that call this service directly from the browser rather than proxying through their own backend |
 
 ### 2. Start it
@@ -52,7 +52,7 @@ Starts:
 ### 3. Verify it's up
 
 ```bash
-curl http://localhost:8100/health                        # {"status":"ok"}
+curl http://localhost:8100/health                        # {"status":"ok","version":"dev"}
 curl http://localhost:8100/.well-known/jwks.json          # the RSA signing key, in JWK format
 ```
 
@@ -92,10 +92,12 @@ domain (`@gmail.com` etc.), not `@example.com`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | — | Liveness check |
+| `GET` | `/health` | — | Liveness check; also returns the build label (`version`, e.g. `v1.2.3`; `dev` for a local build) |
 | `POST` | `/auth/register` | — | Create an account (email, username, password) |
 | `GET` | `/auth/register/genuser` | — | Suggest a random unique username |
-| `POST` | `/auth/login` | — | OAuth2 password form (`username` accepts email *or* username) → signed access token (carrying `app_roles` + `is_superuser`) + public profile |
+| `POST` | `/auth/login` | — | OAuth2 password form (`username` accepts email *or* username) → signed access token (carrying `app_roles` + `is_superuser`), refresh token, public profile |
+| `POST` | `/auth/refresh` | refresh token | Exchange a refresh token for a new access token and a new refresh token (see [Sessions and refresh tokens](#sessions-and-refresh-tokens)) |
+| `POST` | `/auth/logout` | refresh token | End the session: revokes its refresh tokens |
 | `GET` | `/.well-known/jwks.json` | — | RSA public signing key(s), standard JWK format — how every consuming app verifies tokens |
 | `GET` | `/applications` | any user | The per-application role registry (see below) |
 | `PUT` | `/users/{id}/roles/{app_id}` | superuser or admin of that app | Assign a user's role for one app |
@@ -103,6 +105,36 @@ domain (`@gmail.com` etc.), not `@example.com`.
 | `GET` | `/users/me` | self | Your own profile, including your OpenRouter API key if set |
 | `PUT` | `/users/me` | self | Set/clear your own OpenRouter API key |
 | `DELETE` | `/users/me` | self + own password | Delete your own account |
+
+## Sessions and refresh tokens
+
+An access token lives `ACCESS_TOKEN_EXPIRE_MINUTES` (15). A client that does not want to ask for the password every
+15 minutes keeps the **refresh token** that `POST /auth/login` returns next to it. Both new calls take and return JSON.
+
+```text
+POST /auth/login    (form, as before)                 -> 200 {"access_token", "token_type": "bearer", "expires_in": 900, "refresh_token", "user"}
+POST /auth/refresh  {"refresh_token": "<token>"}      -> 200 same body as login, with a NEW refresh_token (the old one is spent)
+                                                         401 {"detail": "Invalid refresh token"}   unknown, expired, revoked, reused, or the user is gone
+                                                         422 token missing or empty
+POST /auth/logout   {"refresh_token": "<token>"}      -> 204, also for an unknown token
+```
+
+How it behaves (`app/services/refresh_token_service.py`):
+
+- The token is a random string; only its SHA-256 hash is stored, in the collection `refresh_tokens`. Treat it like a
+  password: browser JavaScript should never see it (GRIPL keeps it in an httpOnly cookie).
+- Every login is a *family* of tokens. Each refresh spends the used token and issues the next one of the same family.
+  All of them expire together `REFRESH_TOKEN_EXPIRE_DAYS` after the login, so after 30 days the user logs in again, however active they were.
+- A token that is presented again after it was spent means a copy exists somewhere: the whole family is revoked and the
+  user logs in again. For 10 seconds after the first use a second request is answered normally with another new token
+  (parallel requests of one client).
+- `POST /auth/refresh` computes the claims like the login does, from the database as it is now. A role change or a new
+  superuser flag therefore reaches the user at the next refresh (within 15 minutes) without logging in again.
+  The access token that is already out stays valid until it expires.
+- Refresh tokens of a user are deleted when the account is deleted or its superuser flag is revoked.
+- MongoDB removes expired rows itself (TTL index). The indexes are created when the service starts.
+- To log everybody out (for example after restoring a backup, which also restores sessions that were revoked since):
+  `docker compose exec auth-mongo mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin auth_db --eval 'db.refresh_tokens.drop()'`.
 
 ## Registering a New App, and How Roles Work
 
@@ -253,11 +285,59 @@ A consuming app (GRIPL, RAGulate) fetches the calling user's key by calling
 verified locally — no service-to-service secret needed, since auth-service
 independently re-verifies that token before returning anything.
 
+## Releases and promotion
+
+Versions are computed, never typed. The branch rules, the commit prefixes and the promotion steps are the same as in
+GRIPL and are explained once, in GRIPL-v2: [develop-and-release.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/develop-and-release.md)
+(branches, squash merge, prefix to version table) and [deploy-to-prod.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/deploy-to-prod.md)
+(promote, verify, roll back). What differs here:
+
+- There is **one image**, `ghcr.io/dbis-legal-llms/auth-service`, with the tags `:dev`, `:sha-<commit>`, `:X.Y.Z` and `:prod`.
+- The version is built into the image (build argument `APP_VERSION`, see `Dockerfile`) and returned by `GET /health` as
+  `version` (`v1.2.3`; a pull request build is prefixed with its branch). A local build reports `dev`.
+- Tags and GitHub Releases (`vX.Y.Z`) of this repository are independent of GRIPL's.
+- Only pushes to `dev` publish an image. `main` builds nothing: merging `dev` into `main` runs `.github/workflows/promote.yml`,
+  which points `:prod` at the newest `:X.Y.Z` image (no rebuild) and clears the pre-release flag of the releases up to it.
+- To roll prod back, run the **Promote** workflow by hand on `main` with an older version (Actions, *Run workflow*).
+  On the server, `IMAGE_TAG` in `/srv/gripl/prod/auth/.env` can be pinned to a version instead (it ships as `prod`).
+
+| What | Where |
+|---|---|
+| Version rules (`fix:`/`perf:` patch, `feat:` minor, `!` or `BREAKING CHANGE:` major, others none) | `.github/scripts/next-version.sh`; run it in a checkout to see the next version |
+| Test, version, image, release jobs | `.github/workflows/ci.yml` |
+| Pull request title must be a conventional commit | `.github/workflows/pr-title.yml` |
+| Move `:prod` to a version | `.github/workflows/promote.yml` |
+
+## Deployment and server operations
+
+On the shared server, auth-service runs as two stacks (`/srv/gripl/dev/auth` and `/srv/gripl/prod/auth`), each with
+its own MongoDB, signing key and `SECRETS_ENCRYPTION_KEY`. The stack files live in `deploy/`
+(`docker-compose.yml`, `env.example`); the helper scripts are in `deploy/scripts/`.
+
+The server-wide tutorials (updater, backups, releases, rollback, restore, users and roles) are maintained in
+[GRIPL-v2/docs](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/tree/dev/docs). They apply to this service as well, and
+the update and backup script is shared (`GRIPL-v2/deploy/scripts/update-stack.sh`).
+
+| Script | What it does |
+|---|---|
+| `deploy/scripts/clone-prod-to-dev.sh [--yes]` | Replaces the dev database with a copy of prod (users, roles, application registry). Prod is only read. Use it to test a release against real data. |
+| `deploy/scripts/clone-dev-to-prod.sh [--force] [--keep-dev-stopped] [--yes]` | One-time cutover: copies the dev database into an **empty** prod, so the people working on dev log in on prod with the same accounts and the same user ids. Dev is only read. |
+
+Both scripts keep the RSA signing key of each environment separate (a token minted on dev must never be accepted by
+prod), do not copy the sessions (`refresh_tokens`), and remove the stored OpenRouter keys from the copy, because they are encrypted with the source
+environment's `SECRETS_ENCRYPTION_KEY` and cannot be read in the other one. Users enter their key again under
+Account Settings. If both stacks deliberately share one `SECRETS_ENCRYPTION_KEY`, `clone-dev-to-prod.sh` keeps the keys.
+
+`clone-dev-to-prod.sh` stops the auth-service containers of both stacks while it copies, refuses a prod that already
+has users (unless `--force`, which replaces prod's database), refuses an empty dev, starts dev again at the end and
+prints user and application counts of both sides. Everyone has to log in once more afterwards. Run it together
+with its GRIPL counterpart, since GRIPL's data is owned by the auth user id; the full procedure is in
+[docs/move-dev-to-prod.md](https://github.com/DBIS-Legal-LLMs/GRIPL-v2/blob/dev/docs/move-dev-to-prod.md).
+
 ## TODOs
 
 *(by design, staged as follow-up work)*
 
-- **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder.
 - **`/users/me` (GET/PUT)** — landed for the OpenRouter API key specifically (see below); still no read/update for other profile fields (email, preferred model, etc.).
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
 - **Admin UI** — no frontend yet; role assignment and superuser management are the `PUT` endpoints above, first-superuser bootstrap is the script.

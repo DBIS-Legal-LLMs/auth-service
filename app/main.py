@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,6 +8,14 @@ from .api.routes.auth_routes import router as auth_router
 from .api.routes.jwks_routes import router as jwks_router
 from .api.routes.user_routes import router as user_router
 from .config import get_settings
+from .db.mongo import get_database
+from .services.refresh_token_service import ensure_indexes
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await ensure_indexes(get_database())
+    yield
 
 
 def create_app() -> FastAPI:
@@ -14,6 +24,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     settings = get_settings()
@@ -39,4 +50,4 @@ app = create_app()
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": get_settings().app_version}

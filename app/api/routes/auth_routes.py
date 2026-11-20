@@ -1,14 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
 
-from ...models.user_models import UserCreate, UserPublic
+from ...config import get_settings
+from ...models.user_models import UserCreate, UserInDB, UserPublic
 from ...services.application_service import ApplicationService
+from ...services.refresh_token_service import RefreshTokenService
 from ...services.role_resolution import resolve_app_roles
 from ...services.user_service import UserService
 from ...core.jwt import create_access_token
-from ...core.deps import get_application_service, get_user_service
+from ...core.deps import get_application_service, get_refresh_token_service, get_user_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
 
 
 @router.get("/register/genuser")
@@ -48,19 +55,17 @@ async def register(
     return UserPublic.from_user(user)
 
 
-@router.post("/login")
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    user_service: UserService = Depends(get_user_service),
-    application_service: ApplicationService = Depends(get_application_service),
-):
-    user = await user_service.verify_user(form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incorrect email/username or password",
-        )
+async def _session_response(
+    user: UserInDB,
+    refresh_token: str,
+    user_service: UserService,
+    application_service: ApplicationService,
+) -> dict:
+    """The body of login and refresh: a freshly minted access token plus the refresh token.
 
+    Roles are resolved at mint time, from the database as it is now — a role change therefore reaches the
+    user at the next refresh, without a new login.
+    """
     # Resolve the user's effective role for every registered app, fresh at mint
     # time, and embed the whole map — each consuming app reads its own key.
     applications = await application_service.list_applications()
@@ -87,6 +92,8 @@ async def login(
     return {
         "access_token": token,
         "token_type": "bearer",
+        "expires_in": get_settings().access_token_expire_minutes * 60,
+        "refresh_token": refresh_token,
         "user": {
             "id": str(user.id),
             "username": user.username,
@@ -97,3 +104,57 @@ async def login(
             "created_at": user.created_at.isoformat(),
         },
     }
+
+
+@router.post("/login")
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    user_service: UserService = Depends(get_user_service),
+    application_service: ApplicationService = Depends(get_application_service),
+    refresh_tokens: RefreshTokenService = Depends(get_refresh_token_service),
+):
+    user = await user_service.verify_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect email/username or password",
+        )
+
+    refresh_token = await refresh_tokens.start_family(str(user.id))
+    return await _session_response(user, refresh_token, user_service, application_service)
+
+
+@router.post("/refresh")
+async def refresh(
+    body: RefreshRequest,
+    user_service: UserService = Depends(get_user_service),
+    application_service: ApplicationService = Depends(get_application_service),
+    refresh_tokens: RefreshTokenService = Depends(get_refresh_token_service),
+):
+    """Exchange a refresh token for a new access token and a new refresh token (the old one is spent).
+
+    401 for every kind of invalid token (unknown, expired, revoked, reused, owner deleted) so that the
+    answer does not tell an attacker which one it was.
+    """
+    invalid = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    rotated = await refresh_tokens.rotate(body.refresh_token)
+    if rotated is None:
+        raise invalid
+    user_id, new_token = rotated
+
+    user = await user_service.get_by_id(user_id)
+    if user is None:
+        await refresh_tokens.revoke_all_for_user(user_id)
+        raise invalid
+    return await _session_response(user, new_token, user_service, application_service)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    body: RefreshRequest,
+    refresh_tokens: RefreshTokenService = Depends(get_refresh_token_service),
+):
+    """Revoke the session (every refresh token of this login). Unknown tokens are ignored."""
+    await refresh_tokens.revoke_family_of(body.refresh_token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
