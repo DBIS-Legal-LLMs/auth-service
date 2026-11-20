@@ -2,7 +2,7 @@
 
 The resolved per-application `app_roles` claim is added by the login route via
 `extra_claims` (see auth-service#6 / `services/role_resolution.py`). Refresh
-tokens still land in a follow-up.
+tokens are in `services/refresh_token_service.py`.
 """
 
 import base64

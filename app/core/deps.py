@@ -4,6 +4,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from ..db.mongo import get_database
 from ..services.application_service import ApplicationService
+from ..services.refresh_token_service import RefreshTokenService
 from ..services.user_service import UserService
 from .jwt import verify_access_token
 from ..models.user_models import UserInDB
@@ -21,6 +22,10 @@ def get_user_service(db: AsyncDatabase = Depends(get_db)) -> UserService:
 
 def get_application_service(db: AsyncDatabase = Depends(get_db)) -> ApplicationService:
     return ApplicationService(db)
+
+
+def get_refresh_token_service(db: AsyncDatabase = Depends(get_db)) -> RefreshTokenService:
+    return RefreshTokenService(db)
 
 
 async def get_current_user(

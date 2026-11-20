@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.deps import get_application_service, get_current_user, get_user_service
+from app.core.deps import get_application_service, get_current_user, get_refresh_token_service, get_user_service
 from app.core.security import hash_password
 from app.main import app
 from app.models.application_models import ApplicationInDB
@@ -76,6 +76,13 @@ class FakeUserService:
         return self.by_id.pop(user_id, None) is not None
 
 
+class FakeRefreshTokenService:
+    """These tests are about authorization; revocation is covered in test_refresh_tokens.py."""
+
+    async def revoke_all_for_user(self, user_id: str) -> None:
+        pass
+
+
 class FakeApplicationService:
     def __init__(self, apps: list[ApplicationInDB]):
         self.by_id = {a.id: a for a in apps}
@@ -90,6 +97,7 @@ def client_for(caller: UserInDB, users: list[UserInDB], apps: list[ApplicationIn
     app.dependency_overrides[get_current_user] = lambda: caller
     app.dependency_overrides[get_user_service] = lambda: user_service
     app.dependency_overrides[get_application_service] = lambda: application_service
+    app.dependency_overrides[get_refresh_token_service] = lambda: FakeRefreshTokenService()
     return TestClient(app)
 
 
