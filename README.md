@@ -36,7 +36,7 @@ cp .env.example .env
 | `MONGO_URL` / `MONGO_DB_NAME` | Mongo connection — pre-filled correctly for the Docker Compose setup below |
 | `KEYS_DIR` | Where the RSA signing keypair is generated/persisted. In Docker this is a named volume (`auth-service-keys`) — don't remove that volume unless you're OK invalidating every token issued so far |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (default 15) |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | Reserved for the not-yet-implemented refresh token flow |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Lifetime of a login session, i.e. of its refresh tokens (default 30), counted from the login |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed browser origins. Only matters for apps that call this service directly from the browser rather than proxying through their own backend |
 
 ### 2. Start it
@@ -95,7 +95,9 @@ domain (`@gmail.com` etc.), not `@example.com`.
 | `GET` | `/health` | — | Liveness check; also returns the build label (`version`, e.g. `v1.2.3`; `dev` for a local build) |
 | `POST` | `/auth/register` | — | Create an account (email, username, password) |
 | `GET` | `/auth/register/genuser` | — | Suggest a random unique username |
-| `POST` | `/auth/login` | — | OAuth2 password form (`username` accepts email *or* username) → signed access token (carrying `app_roles` + `is_superuser`) + public profile |
+| `POST` | `/auth/login` | — | OAuth2 password form (`username` accepts email *or* username) → signed access token (carrying `app_roles` + `is_superuser`), refresh token, public profile |
+| `POST` | `/auth/refresh` | refresh token | Exchange a refresh token for a new access token and a new refresh token (see [Sessions and refresh tokens](#sessions-and-refresh-tokens)) |
+| `POST` | `/auth/logout` | refresh token | End the session: revokes its refresh tokens |
 | `GET` | `/.well-known/jwks.json` | — | RSA public signing key(s), standard JWK format — how every consuming app verifies tokens |
 | `GET` | `/applications` | any user | The per-application role registry (see below) |
 | `PUT` | `/users/{id}/roles/{app_id}` | superuser or admin of that app | Assign a user's role for one app |
@@ -103,6 +105,36 @@ domain (`@gmail.com` etc.), not `@example.com`.
 | `GET` | `/users/me` | self | Your own profile, including your OpenRouter API key if set |
 | `PUT` | `/users/me` | self | Set/clear your own OpenRouter API key |
 | `DELETE` | `/users/me` | self + own password | Delete your own account |
+
+## Sessions and refresh tokens
+
+An access token lives `ACCESS_TOKEN_EXPIRE_MINUTES` (15). A client that does not want to ask for the password every
+15 minutes keeps the **refresh token** that `POST /auth/login` returns next to it. Both new calls take and return JSON.
+
+```text
+POST /auth/login    (form, as before)                 -> 200 {"access_token", "token_type": "bearer", "expires_in": 900, "refresh_token", "user"}
+POST /auth/refresh  {"refresh_token": "<token>"}      -> 200 same body as login, with a NEW refresh_token (the old one is spent)
+                                                         401 {"detail": "Invalid refresh token"}   unknown, expired, revoked, reused, or the user is gone
+                                                         422 token missing or empty
+POST /auth/logout   {"refresh_token": "<token>"}      -> 204, also for an unknown token
+```
+
+How it behaves (`app/services/refresh_token_service.py`):
+
+- The token is a random string; only its SHA-256 hash is stored, in the collection `refresh_tokens`. Treat it like a
+  password: browser JavaScript should never see it (GRIPL keeps it in an httpOnly cookie).
+- Every login is a *family* of tokens. Each refresh spends the used token and issues the next one of the same family.
+  All of them expire together `REFRESH_TOKEN_EXPIRE_DAYS` after the login, so after 30 days the user logs in again, however active they were.
+- A token that is presented again after it was spent means a copy exists somewhere: the whole family is revoked and the
+  user logs in again. For 10 seconds after the first use a second request is answered normally with another new token
+  (parallel requests of one client).
+- `POST /auth/refresh` computes the claims like the login does, from the database as it is now. A role change or a new
+  superuser flag therefore reaches the user at the next refresh (within 15 minutes) without logging in again.
+  The access token that is already out stays valid until it expires.
+- Refresh tokens of a user are deleted when the account is deleted or its superuser flag is revoked.
+- MongoDB removes expired rows itself (TTL index). The indexes are created when the service starts.
+- To log everybody out (for example after restoring a backup, which also restores sessions that were revoked since):
+  `docker compose exec auth-mongo mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin auth_db --eval 'db.refresh_tokens.drop()'`.
 
 ## Registering a New App, and How Roles Work
 
@@ -292,7 +324,7 @@ the update and backup script is shared (`GRIPL-v2/deploy/scripts/update-stack.sh
 | `deploy/scripts/clone-dev-to-prod.sh [--force] [--keep-dev-stopped] [--yes]` | One-time cutover: copies the dev database into an **empty** prod, so the people working on dev log in on prod with the same accounts and the same user ids. Dev is only read. |
 
 Both scripts keep the RSA signing key of each environment separate (a token minted on dev must never be accepted by
-prod), and both remove the stored OpenRouter keys from the copy, because they are encrypted with the source
+prod), do not copy the sessions (`refresh_tokens`), and remove the stored OpenRouter keys from the copy, because they are encrypted with the source
 environment's `SECRETS_ENCRYPTION_KEY` and cannot be read in the other one. Users enter their key again under
 Account Settings. If both stacks deliberately share one `SECRETS_ENCRYPTION_KEY`, `clone-dev-to-prod.sh` keeps the keys.
 
@@ -306,7 +338,6 @@ with its GRIPL counterpart, since GRIPL's data is owned by the auth user id; the
 
 *(by design, staged as follow-up work)*
 
-- **Refresh tokens** — access tokens are short-lived (15 min default) with no way to renew one yet short of logging in again. `REFRESH_TOKEN_EXPIRE_DAYS` exists in config as a placeholder.
 - **`/users/me` (GET/PUT)** — landed for the OpenRouter API key specifically (see below); still no read/update for other profile fields (email, preferred model, etc.).
 - **`/users/lookup`** — username → id resolution, for future dataset-sharing use cases.
 - **Admin UI** — no frontend yet; role assignment and superuser management are the `PUT` endpoints above, first-superuser bootstrap is the script.
