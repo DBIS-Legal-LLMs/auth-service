@@ -8,6 +8,7 @@
 #   * the RSA signing key volume — dev generates its own. If dev shared prod's key,
 #     a token minted in dev (where developers can edit the database) would be
 #     accepted by prod.
+#   * the refresh tokens (sessions): nobody is logged in on dev because of a login on prod
 #   * users' stored OpenRouter keys — they are encrypted with prod's
 #     SECRETS_ENCRYPTION_KEY and would be unreadable in dev anyway, so they are
 #     removed from the copy. Users re-enter them in dev if they need them there.
@@ -54,8 +55,11 @@ dcompose stop auth-service
 dcompose up -d auth-mongo --wait
 
 log "copying database $prod_db (prod) -> $dev_db (dev)"
-pcompose exec -T auth-mongo sh -c "mongodump --quiet --archive --db '$prod_db' $mongo_auth" \
+pcompose exec -T auth-mongo sh -c "mongodump --quiet --archive --db '$prod_db' --excludeCollection=refresh_tokens $mongo_auth" \
   | dcompose exec -T auth-mongo sh -c "mongorestore --quiet --archive --drop --nsFrom '$prod_db.*' --nsTo '$dev_db.*' $mongo_auth"
+
+log "dropping the sessions (refresh tokens) of dev's old database, so nobody stays logged in from before"
+dcompose exec -T auth-mongo sh -c "mongosh --quiet $mongo_auth '$dev_db' --eval 'db.refresh_tokens.drop()'" </dev/null >/dev/null
 
 log "removing the copied OpenRouter keys (undecryptable in dev)"
 dcompose exec -T auth-mongo sh -c "mongosh --quiet $mongo_auth '$dev_db' --eval 'db.users.updateMany({}, {\$unset: {openrouter_api_key_encrypted: \"\"}}).modifiedCount'"

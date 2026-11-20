@@ -8,6 +8,7 @@
 # Copied: all users (password hashes, roles, superuser flag) and the application registry.
 # Deliberately NOT copied or kept:
 #   * the RSA signing key volume: prod generates its own, everybody logs in once more
+#   * the refresh tokens (sessions): everybody logs in again anyway
 #   * users' stored OpenRouter keys, when the two stacks use different SECRETS_ENCRYPTION_KEYs (the
 #     default): they would be unreadable in prod, so they are removed from the copy and every user enters
 #     the key again under Account Settings. With the same key they are kept.
@@ -98,8 +99,11 @@ dev_apps=$(count_docs dev "$dev_db" applications)
 [ "$dev_users" != 0 ] || die "dev has no users, refusing to copy an empty database"
 
 log "copying database $dev_db (dev) -> $prod_db (prod)"
-dcompose exec -T auth-mongo sh -c "mongodump --quiet --archive --db '$dev_db' $mongo_auth" </dev/null \
+dcompose exec -T auth-mongo sh -c "mongodump --quiet --archive --db '$dev_db' --excludeCollection=refresh_tokens $mongo_auth" </dev/null \
   | pcompose exec -T auth-mongo sh -c "mongorestore --quiet --archive --drop --nsFrom '$dev_db.*' --nsTo '$prod_db.*' $mongo_auth"
+
+log "dropping prod's old sessions (refresh tokens), the copy starts without any"
+pcompose exec -T auth-mongo sh -c "mongosh --quiet $mongo_auth '$prod_db' --eval 'db.refresh_tokens.drop()'" </dev/null >/dev/null
 
 if [ "$dev_key" != "$prod_key" ]; then
   log "removing the copied OpenRouter keys (undecryptable in prod)"
