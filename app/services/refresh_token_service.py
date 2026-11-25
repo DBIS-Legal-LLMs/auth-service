@@ -11,6 +11,7 @@ client and answered with another successor; after it the whole family is revoked
 """
 
 import hashlib
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,8 @@ from pymongo.asynchronous.database import AsyncDatabase
 from ..config import get_settings
 
 REFRESH_TOKENS_COLLECTION = "refresh_tokens"
+
+logger = logging.getLogger(__name__)
 
 # A second request that arrives with a token that was just exchanged (two server actions refreshing at once)
 # is not an attack; it gets a new token in the same family.
@@ -95,11 +98,21 @@ class RefreshTokenService:
         )
         if doc is None:
             doc = await self.tokens.find_one({"token_hash": token_hash})
-            if doc is None or doc.get("revoked_at") is not None or _utc(doc["expires_at"]) <= now:
+            if doc is None:
+                logger.warning("event=refresh_rejected reason=unknown_token")
+                return None
+            who = "user_id=%s family_id=%s" % (doc["user_id"], doc["family_id"])
+            if doc.get("revoked_at") is not None:
+                logger.warning("event=refresh_rejected reason=revoked %s", who)
+                return None
+            if _utc(doc["expires_at"]) <= now:
+                logger.warning("event=refresh_rejected reason=expired %s", who)
                 return None
             if now - _utc(doc["used_at"]) > REUSE_GRACE:
                 await self._revoke_family(doc["family_id"])
+                logger.warning("event=refresh_token_reuse reason=spent_token_presented_again action=family_revoked %s", who)
                 return None
+            logger.info("event=refresh_reused_in_grace_window %s", who)
 
         new_token = await self._store(doc["user_id"], doc["family_id"], _utc(doc["expires_at"]))
         return doc["user_id"], new_token

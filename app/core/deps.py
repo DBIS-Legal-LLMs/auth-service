@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pymongo.asynchronous.database import AsyncDatabase
@@ -9,6 +11,7 @@ from ..services.user_service import UserService
 from .jwt import verify_access_token
 from ..models.user_models import UserInDB
 
+logger = logging.getLogger(__name__)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
@@ -35,7 +38,11 @@ async def get_current_user(
     try:
         payload = verify_access_token(token)
         subject = payload.get("sub")
-    except ValueError:
+    except ValueError as error:
+        # an expired access token is routine (every 15 minutes) and stays out of the error log
+        cause = type(error.__cause__).__name__
+        level = logging.INFO if cause == "ExpiredSignatureError" else logging.WARNING
+        logger.log(level, "event=access_token_rejected reason=%s", cause)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
@@ -49,6 +56,7 @@ async def get_current_user(
 
     user = await user_service.get_by_id(subject)
     if user is None:
+        logger.warning("event=access_token_rejected reason=user_not_found user_id=%r", subject)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",

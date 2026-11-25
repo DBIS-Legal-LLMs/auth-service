@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .env
 keys/
+logs/
 *.pem
 .idea/
 .vscode/

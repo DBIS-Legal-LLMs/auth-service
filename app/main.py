@@ -8,14 +8,19 @@ from .api.routes.auth_routes import router as auth_router
 from .api.routes.jwks_routes import router as jwks_router
 from .api.routes.user_routes import router as user_router
 from .config import get_settings
+from .core.logging_setup import install_error_log, remove_error_log
 from .db.mongo import get_database
 from .services.refresh_token_service import ensure_indexes
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # here and not at import: uvicorn resets the handlers of its own loggers when it starts
+    settings = get_settings()
+    install_error_log(settings.log_dir, settings.log_retention_days, settings.log_max_file_mb)
     await ensure_indexes(get_database())
     yield
+    remove_error_log()
 
 
 def create_app() -> FastAPI:
