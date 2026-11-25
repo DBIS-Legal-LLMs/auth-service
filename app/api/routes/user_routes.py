@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
@@ -10,6 +12,7 @@ from ...services.role_resolution import resolve_role
 from ...services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
+logger = logging.getLogger(__name__)
 
 
 class RoleAssignment(BaseModel):
@@ -31,6 +34,7 @@ def _reauthenticate(caller: UserInDB, password: str) -> None:
     is not enough on its own. A stolen token alone must not be able to mint a
     superuser or delete an account."""
     if not verify_password(password, caller.password_hash):
+        logger.warning("event=reauth_failed user_id=%s", caller.id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Password reauthentication failed",
@@ -74,6 +78,7 @@ async def set_user_app_role(
 
     caller_is_app_admin = caller.is_superuser or resolve_role(caller, app) == "admin"
     if not caller_is_app_admin:
+        logger.warning("event=role_change_forbidden user_id=%s app_id=%r target_id=%r", caller.id, app_id, user_id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Not an admin for application '{app_id}'",
@@ -111,6 +116,7 @@ async def set_superuser(
       superuser), mirroring the self-deletion guard.
     """
     if not caller.is_superuser:
+        logger.warning("event=superuser_change_forbidden user_id=%s target_id=%r", caller.id, user_id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only a global superuser can manage the superuser tier",

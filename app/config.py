@@ -17,6 +17,11 @@ class Settings:
     access_token_expire_minutes: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
     refresh_token_expire_days: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
+    # Daily error log (WARNING and above): one file per day in this directory, see app/core/logging_setup.py
+    log_dir: str = os.getenv("LOG_DIR", "./logs")
+    log_retention_days: int = int(os.getenv("LOG_RETENTION_DAYS", "30"))
+    log_max_file_mb: int = int(os.getenv("LOG_MAX_FILE_MB", "20"))
+
     # CORS — comma-separated list of allowed browser origins
     cors_allowed_origins: list[str] = [
         origin.strip()

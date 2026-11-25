@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
@@ -12,6 +14,7 @@ from ...core.jwt import create_access_token
 from ...core.deps import get_application_service, get_refresh_token_service, get_user_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 class RefreshRequest(BaseModel):
@@ -115,6 +118,8 @@ async def login(
 ):
     user = await user_service.verify_user(form_data.username, form_data.password)
     if not user:
+        # the identifier is what the client typed; repr() keeps line breaks in it out of the log
+        logger.warning("event=login_failed login=%r", form_data.username)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email/username or password",
@@ -145,6 +150,7 @@ async def refresh(
 
     user = await user_service.get_by_id(user_id)
     if user is None:
+        logger.warning("event=refresh_rejected reason=user_deleted user_id=%s", user_id)
         await refresh_tokens.revoke_all_for_user(user_id)
         raise invalid
     return await _session_response(user, new_token, user_service, application_service)

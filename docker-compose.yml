@@ -12,8 +12,10 @@ services:
     environment:
       - MONGO_URL=mongodb://auth-mongo:27017
       - KEYS_DIR=/app/keys
+      - LOG_DIR=/app/logs
     volumes:
       - auth-service-keys:/app/keys
+      - ./logs:/app/logs
     ports:
       - "8100:8000"
     networks:

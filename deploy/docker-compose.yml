@@ -31,12 +31,17 @@ services:
       - MONGO_DB_NAME=${MONGO_DB_NAME:-auth_db}
       - KEYS_DIR=/app/keys
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:?set SECRETS_ENCRYPTION_KEY in .env}
+      - LOG_DIR=/app/logs   # daily error log, see the bind mount below
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-30}
       - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
       - REFRESH_TOKEN_EXPIRE_DAYS=${REFRESH_TOKEN_EXPIRE_DAYS:-30}
       # browser origins that call auth-service directly; GRIPL proxies server-side and needs none
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
     volumes:
       - auth-keys:/app/keys   # RSA signing key, generated on first start — losing it logs everybody out
+      # daily error log files, readable on the host in <stack dir>/logs. Docker creates the folder on the first
+      # start; the container runs as root, so it can always write there.
+      - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
       interval: 15s
