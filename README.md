@@ -37,6 +37,7 @@ cp .env.example .env
 | `KEYS_DIR` | Where the RSA signing keypair is generated/persisted. In Docker this is a named volume (`auth-service-keys`) — don't remove that volume unless you're OK invalidating every token issued so far |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime (default 15) |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Lifetime of a login session, i.e. of its refresh tokens (default 30), counted from the login |
+| `LOG_DIR` / `LOG_RETENTION_DAYS` / `LOG_MAX_FILE_MB` | Where the daily error log goes (default `./logs`), how many days of it are kept (30) and the size limit of one day's file (20 MB), see [Error log](#error-log) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed browser origins. Only matters for apps that call this service directly from the browser rather than proxying through their own backend |
 
 ### 2. Start it
@@ -135,6 +136,28 @@ How it behaves (`app/services/refresh_token_service.py`):
 - MongoDB removes expired rows itself (TTL index). The indexes are created when the service starts.
 - To log everybody out (for example after restoring a backup, which also restores sessions that were revoked since):
   `docker compose exec auth-mongo mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin auth_db --eval 'db.refresh_tokens.drop()'`.
+
+## Error log
+
+Besides the console, the service writes every **WARNING and ERROR** line (and the traceback of every unhandled
+exception) to one file per day, `auth-service-errors-YYYY-MM-DD.log` (UTC days). INFO lines and uvicorn's access log
+are not written to it. On the server the files are in `/srv/gripl/<env>/auth/logs` (the compose file mounts `./logs` of the
+stack directory into the container; the folder is created by Docker on the first start and is not in git).
+
+```bash
+less /srv/gripl/prod/auth/logs/auth-service-errors-2026-11-23.log      # one day
+grep -h "event=refresh_token_reuse" /srv/gripl/prod/auth/logs/*.log    # one kind of event over all days
+```
+
+A line is `time LEVEL logger event=<what> key=value ...`; the events carry the user id or the typed login, the
+refresh-token family id and a `reason`, never a password, token, token hash, API key or request body
+(`login_failed`, `refresh_rejected`, `refresh_token_reuse`, `access_token_rejected`, `reauth_failed`, `role_change_forbidden`).
+
+- **Retention:** the last `LOG_RETENTION_DAYS` days (30); older files are deleted when a new day starts. A day's file stops
+  growing at `LOG_MAX_FILE_MB` (20), so the folder cannot exceed about 600 MB.
+- **Directory:** `LOG_DIR` (container: `/app/logs`; a local run without the variable writes `./logs`). If it cannot be created or
+  written the service starts anyway and prints one warning to the console.
+- The files are not part of the update backup (`update-stack.sh` dumps only MongoDB) and are not touched by the clone scripts.
 
 ## Registering a New App, and How Roles Work
 
